@@ -25,6 +25,7 @@ from datetime import datetime
 
 import schedule
 
+from formula_handler import extract as extract_formulas, save_formulas
 from reader import FAILED_IDS_PATH, full_read
 from reporter import generate_weekly_top10, render_html_all
 from searcher import search_all_fields
@@ -77,6 +78,11 @@ def _remove_from_failed(arxiv_id: str) -> None:
         )
 
 
+def _has_formulas(arxiv_id: str) -> bool:
+    safe_id = arxiv_id.replace("/", "_")
+    return (PAPERS_DIR / f"{safe_id}.formulas.json").exists()
+
+
 def pipeline_run(
     max_read: int = DEFAULT_MAX_READ,
     retry_failed: bool = False,
@@ -86,6 +92,7 @@ def pipeline_run(
     top_n: int = 10,
     auto_open: bool = True,
     skip_report: bool = False,
+    skip_formulas: bool = False,
 ) -> dict:
     """一次完整的增量运行，返回统计信息。"""
     started = datetime.now()
@@ -103,9 +110,9 @@ def pipeline_run(
         if not data:
             log.error("  没有历史 candidates 可复用，--skip-search 无法继续")
             return stats
-        log.info("[1/3 search] 跳过，复用最新 candidates（total=%d）", data.get("total", 0))
+        log.info("[1/5 search] 跳过，复用最新 candidates（total=%d）", data.get("total", 0))
     else:
-        log.info("[1/3 search] 批量检索 6 领域 × 多关键词")
+        log.info("[1/5 search] 批量检索 6 领域 × 多关键词")
         search_all_fields(save=True)
         data = _latest_candidates()
 
@@ -116,8 +123,8 @@ def pipeline_run(
             field_index.setdefault(f, []).append(p["arxiv_id"])
     stats["search_total"] = len(all_papers)
 
-    # ---------- 2/3 read ----------
-    log.info("[2/3 read] 计算增量")
+    # ---------- 2/5 read ----------
+    log.info("[2/5 read] 计算增量")
     seen = load_seen_ids()
     failed = _load_failed_ids()
 
@@ -172,18 +179,46 @@ def pipeline_run(
     )
 
     if skip_llm:
-        log.info("[3/4 llm] 跳过（--no-llm）")
+        log.info("[3/5 llm] 跳过（--no-llm）")
         stats["summarized"] = 0
         stats["reports_generated"] = 0
     else:
-        # ---------- 3/4 summarize + field_report ----------
+        # ---------- 3/5 summarize + field_report ----------
         _run_llm_stage(stats, field_index, field_filter)
 
-    # ---------- 4/4 report：TOP10 + HTML + 自动打开 ----------
-    if skip_report:
-        log.info("[4/4 report] 跳过（--skip-report）")
+    # ---------- 4/5 formulas：从 arXiv 源码提取公式 ----------
+    if skip_formulas:
+        log.info("[4/5 formulas] 跳过（--skip-formulas）")
+        stats["formulas_extracted"] = 0
     else:
-        log.info("[4/4 report] 综合评分 + TOP%d + HTML 渲染", top_n)
+        log.info("[4/5 formulas] 从 arXiv 源码提取公式")
+        formulas_done = 0
+        formulas_fail = 0
+        for paper_json in sorted(PAPERS_DIR.glob("*.json")):
+            # 只处理原始精读 JSON（跳过 .formulas.json 和 .summary.md）
+            if paper_json.name.endswith(".formulas.json"):
+                continue
+            aid = paper_json.stem
+            if _has_formulas(aid):
+                continue
+            try:
+                fs = extract_formulas(aid)
+                save_formulas(aid, fs, {"type": "arxiv_latex"})
+                formulas_done += 1
+            except NotImplementedError:
+                pass  # Phase 2 stubs
+            except Exception as e:
+                formulas_fail += 1
+                log.warning("  formula extract(%s) 失败：%s", aid, e)
+        log.info("  本轮新提取公式：%d 篇（失败 %d）", formulas_done, formulas_fail)
+        stats["formulas_extracted"] = formulas_done
+        stats["formulas_failed"] = formulas_fail
+
+    # ---------- 5/5 report：TOP10 + HTML + 自动打开 ----------
+    if skip_report:
+        log.info("[5/5 report] 跳过（--skip-report）")
+    else:
+        log.info("[5/5 report] 综合评分 + TOP%d + HTML 渲染", top_n)
         try:
             r = generate_weekly_top10(top_n=top_n)
             stats["top_n_generated"] = r["top_n"]
@@ -206,7 +241,7 @@ def pipeline_run(
 
 def _run_llm_stage(stats: dict, field_index: dict[str, list[str]], field_filter: str | None) -> None:
     """原 3/3 阶段抽成函数，便于 skip_llm 分支整洁。"""
-    log.info("[3/4 llm] 生成摘要和综述")
+    log.info("[3/5 llm] 生成摘要和综述")
 
     # 3a: 对所有已 read 但没 summary 的论文补摘要
     summarized = 0
@@ -294,6 +329,8 @@ def main():
                         help="跑完后不自动打开浏览器")
     parser.add_argument("--skip-report", action="store_true",
                         help="跳过 TOP10 + HTML 渲染阶段（只跑 search/read/summary）")
+    parser.add_argument("--skip-formulas", action="store_true",
+                        help="跳过从 arXiv 源码提取公式的阶段")
     parser.add_argument("--verify-schedule", action="store_true",
                         help=argparse.SUPPRESS)  # 内部：注册调度后立即退出，用于冒烟
     args = parser.parse_args()
@@ -307,6 +344,7 @@ def main():
         top_n=args.top_n,
         auto_open=not args.no_open,
         skip_report=args.skip_report,
+        skip_formulas=args.skip_formulas,
     )
 
     if args.verify_schedule:

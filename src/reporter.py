@@ -16,6 +16,7 @@ from pathlib import Path
 
 import markdown
 
+from enricher import venue_prestige_score
 from summarizer import PAPERS_DIR, REPORTS_DIR, score_relevance
 from utils import DATA_DIR, OUTPUT_DIR, get_logger, load_keywords
 
@@ -24,10 +25,11 @@ log = get_logger("reporter")
 HTML_DIR = OUTPUT_DIR / "html"
 INDEX_HTML = HTML_DIR / "index.html"
 
-# 综合评分权重
-W_RELEVANCE = 0.5
-W_DEEPXIV = 0.3
-W_CITATION = 0.2
+# 综合评分权重（V2：加入 venue_prestige 维度）
+W_RELEVANCE = 0.45
+W_DEEPXIV = 0.25
+W_VENUE = 0.20
+W_CITATION = 0.10
 
 # 启发式相关性：6 领域 × 最高 5 分 = 30 为满分
 _RELEVANCE_MAX = 6 * 5
@@ -35,6 +37,21 @@ _RELEVANCE_MAX = 6 * 5
 _DEEPXIV_CAP = 10.0
 # 引用数 log 归一化：log1p(999)/log(1000) ≈ 1.0（即引用 ~1000 即满分）
 _CITATION_CAP = 1000
+
+# MathJax 配置：支持 $...$ inline 和 $$...$$ / \\[...\\] display
+_MATHJAX = """
+<script>
+MathJax = {
+    tex: {
+        inlineMath: [['$', '$'], ['\\\\(', '\\\\)']],
+        displayMath: [['$$', '$$'], ['\\\\[', '\\\\]']],
+        processEscapes: true
+    },
+    options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+"""
 
 # GitHub 风格的简单 CSS
 _CSS = """
@@ -67,10 +84,15 @@ table th { background: #f6f8fa; }
 
 
 def composite_score(paper: dict, fields_config: dict | None = None) -> dict:
-    """对 candidates.json 里的 paper entry 计算综合评分。
+    """对 candidates.json 里的 paper entry 计算综合评分（V2 四维）。
 
-    返回 {"composite", "relevance", "deepxiv", "citation", "breakdown": {field: 1-5}}
-    composite / 其他分量都归一化到 0-100 区间。
+    四维（归一到 0-100）：
+      - relevance  启发式领域关键词命中
+      - deepxiv    DeepXiv search score
+      - venue      venue prestige（OpenAlex venue_h_index；预印本基线 10 分）
+      - citation   引用数 log 归一化（优先 OpenAlex 的更新值，fallback DeepXiv）
+
+    composite 按 W_RELEVANCE/W_DEEPXIV/W_VENUE/W_CITATION 加权求和（也是 0-100）。
     """
     if fields_config is None:
         fields_config = load_keywords().get("fields", {})
@@ -82,22 +104,50 @@ def composite_score(paper: dict, fields_config: dict | None = None) -> dict:
     deepxiv_raw = float(paper.get("score") or 0)
     deepxiv_norm = min(deepxiv_raw, _DEEPXIV_CAP) / _DEEPXIV_CAP * 100
 
-    cite_raw = int(paper.get("citation_count") or 0)
+    # OpenAlex venue prestige（来自 enricher）
+    oa = paper.get("_openalex") or {}
+    venue_norm = venue_prestige_score(oa)
+
+    # 引用数：优先用 OpenAlex 的（更新更准），fallback DeepXiv
+    cite_raw = int(oa.get("cited_by_count") or paper.get("citation_count") or 0)
     cite_norm = (
         min(math.log1p(cite_raw) / math.log(_CITATION_CAP), 1.0) * 100 if cite_raw > 0 else 0
     )
 
-    composite = W_RELEVANCE * rel_norm + W_DEEPXIV * deepxiv_norm + W_CITATION * cite_norm
+    composite = (
+        W_RELEVANCE * rel_norm
+        + W_DEEPXIV * deepxiv_norm
+        + W_VENUE * venue_norm
+        + W_CITATION * cite_norm
+    )
 
     return {
         "composite": round(composite, 2),
         "relevance": round(rel_norm, 2),
         "deepxiv": round(deepxiv_norm, 2),
+        "venue": round(venue_norm, 2),
         "citation": round(cite_norm, 2),
         "citation_count": cite_raw,
         "deepxiv_raw": round(deepxiv_raw, 3),
+        "venue_type": oa.get("venue_type"),
+        "venue_name": oa.get("venue_name"),
+        "venue_h_index": oa.get("venue_h_index"),
         "breakdown": rel_per_field,
     }
+
+
+def _venue_badge(score_dict: dict) -> str:
+    """把 venue 信息渲染成 markdown 单元格里的一个短 badge。"""
+    vtype = score_dict.get("venue_type")
+    vname = score_dict.get("venue_name")
+    vh = score_dict.get("venue_h_index")
+    if not vtype:
+        return "-"
+    if vtype == "repository":
+        return "arXiv"
+    # 截断过长 venue 名字
+    short = (vname or vtype)[:22] + ("…" if vname and len(vname) > 22 else "")
+    return f"{short} (h={vh})" if vh else short
 
 
 def _latest_candidates_path() -> Path | None:
@@ -164,22 +214,23 @@ def generate_weekly_top10(
         "",
         f"> 生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}  ",
         f"> 候选池：`{Path(candidates_path).name}`（共 {len(papers)} 篇，时间窗 {data.get('date_from')} 起）  ",
-        f"> 评分公式：启发式相关性 × {W_RELEVANCE:.0%} + DeepXiv 分 × {W_DEEPXIV:.0%} + 引用数 × {W_CITATION:.0%}  ",
+        f"> 评分公式：启发式相关性 × {W_RELEVANCE:.0%} + DeepXiv 分 × {W_DEEPXIV:.0%} + Venue 档次 × {W_VENUE:.0%} + 引用数 × {W_CITATION:.0%}  ",
         "> 入选条件：已生成 .summary.md 的候选，按综合分降序",
         "",
         "## 综合排名",
         "",
-        "| 排名 | arXiv | 标题 | 综合分 | 相关性 | DeepXiv | 引用 | 领域命中 |",
-        "| ---: | :--- | :--- | ---: | ---: | ---: | ---: | :--- |",
+        "| 排名 | arXiv | 标题 | 综合分 | 相关性 | DeepXiv | Venue | 引用 | 领域命中 |",
+        "| ---: | :--- | :--- | ---: | ---: | ---: | :--- | ---: | :--- |",
     ]
     for rank, (s, p) in enumerate(top, 1):
         aid = p["arxiv_id"]
         title = (p.get("title") or "").replace("|", "/")
         fields_hit = ", ".join(p.get("_fields") or [])
+        venue_cell = _venue_badge(s)
         lines.append(
             f"| #{rank} | [{aid}](https://arxiv.org/abs/{aid}) | {title[:60]} "
             f"| {s['composite']:.1f} | {s['relevance']:.0f} | {s['deepxiv']:.0f} "
-            f"| {s['citation_count']} | {fields_hit} |"
+            f"| {venue_cell} | {s['citation_count']} | {fields_hit} |"
         )
     lines.append("")
 
@@ -194,7 +245,8 @@ def generate_weekly_top10(
         # 给原 summary 加个排名条和评分条
         rank_line = (
             f"### #{rank} · 综合分 {s['composite']:.1f}"
-            f"（相关 {s['relevance']:.0f} / DeepXiv {s['deepxiv']:.0f} / 引用 {s['citation_count']}）"
+            f"（相关 {s['relevance']:.0f} / DeepXiv {s['deepxiv']:.0f}"
+            f" / Venue {s['venue']:.0f} / 引用 {s['citation_count']}）"
         )
         lines.extend([rank_line, "", summary_md, "", "---", ""])
 
@@ -238,6 +290,7 @@ def _md_to_html(md_text: str, title: str, back_link: str | None = None) -> str:
 <meta charset="UTF-8">
 <title>{title}</title>
 <style>{_CSS}</style>
+{_MATHJAX}
 </head>
 <body>
 {body_html}
@@ -274,6 +327,25 @@ def render_html_all(open_browser: bool = False) -> Path:
         arxiv_id = md_path.stem.replace(".summary", "")
         paper_entries.append((arxiv_id, f"papers/{html_path.name}"))
 
+    # 2b) 公式速览 → output/html/papers/<id>.formulas.html
+    formula_entries: dict[str, tuple[str, int, int]] = {}  # aid → (href, display_n, total)
+    for md_path in sorted(PAPERS_DIR.glob("*.formulas.md")):
+        arxiv_id = md_path.stem.replace(".formulas", "")
+        html_path = HTML_DIR / "papers" / (md_path.stem + ".html")
+        md_text = md_path.read_text(encoding="utf-8")
+        html_path.write_text(_md_to_html(md_text, md_path.stem, back), encoding="utf-8")
+        # 统计公式数（从对应 json 读）
+        json_path = PAPERS_DIR / f"{arxiv_id}.formulas.json"
+        display_n = total_n = 0
+        if json_path.exists():
+            try:
+                fj = json.loads(json_path.read_text(encoding="utf-8"))
+                display_n = fj.get("counts", {}).get("display", 0)
+                total_n = fj.get("counts", {}).get("total", 0)
+            except (OSError, json.JSONDecodeError):
+                pass
+        formula_entries[arxiv_id] = (f"papers/{html_path.name}", display_n, total_n)
+
     # 3) 组索引页
     # 分组：weekly_top 单独置顶，其他 report 作为领域综述区
     weekly = [e for e in report_entries if e[0].startswith("weekly_top")]
@@ -293,14 +365,18 @@ def render_html_all(open_browser: bool = False) -> Path:
         paper_entries, key=lambda e: cand_scores.get(e[0], -1), reverse=True
     )
 
-    def li(entries, show_score=False):
+    def li(entries, show_score=False, attach_formulas=False):
         items = []
         for name, href in entries:
             if show_score and name in cand_scores:
                 badge = f'<span class="score-badge">{cand_scores[name]:.1f}</span> '
             else:
                 badge = ""
-            items.append(f'  <li>{badge}<a href="{href}">{name}</a></li>')
+            formula_suffix = ""
+            if attach_formulas and name in formula_entries:
+                fhref, disp_n, total_n = formula_entries[name]
+                formula_suffix = f' · <a href="{fhref}">📐 公式 {disp_n}/{total_n}</a>'
+            items.append(f'  <li>{badge}<a href="{href}">{name}</a>{formula_suffix}</li>')
         return "\n".join(items)
 
     candidates_name = cand_path.name if cand_path else "（无）"
@@ -310,10 +386,11 @@ def render_html_all(open_browser: bool = False) -> Path:
 <meta charset="UTF-8">
 <title>smart-literature-agent 报告索引</title>
 <style>{_CSS}</style>
+{_MATHJAX}
 </head>
 <body>
 <h1>smart-literature-agent 报告索引</h1>
-<p class="meta">生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}　|　候选池：<code>{candidates_name}</code>　|　单篇摘要：{len(paper_entries)}　|　领域综述：{len(field_reports)}　|　本周 TOP：{len(weekly)}</p>
+<p class="meta">生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}　|　候选池：<code>{candidates_name}</code>　|　单篇摘要：{len(paper_entries)}　|　领域综述：{len(field_reports)}　|　本周 TOP：{len(weekly)}　|　公式速览：{len(formula_entries)}</p>
 
 <div class="index-section">
 <h2>本周 TOP</h2>
@@ -332,11 +409,11 @@ def render_html_all(open_browser: bool = False) -> Path:
 <div class="index-section">
 <h2>单篇摘要（按综合评分降序）</h2>
 <ul>
-{li(scored_paper_entries, show_score=True)}
+{li(scored_paper_entries, show_score=True, attach_formulas=True)}
 </ul>
 </div>
 
-<p class="meta">评分公式：启发式相关性 × {W_RELEVANCE:.0%} + DeepXiv 分 × {W_DEEPXIV:.0%} + 引用数 × {W_CITATION:.0%}</p>
+<p class="meta">评分公式：启发式相关性 × {W_RELEVANCE:.0%} + DeepXiv 分 × {W_DEEPXIV:.0%} + Venue 档次 × {W_VENUE:.0%} + 引用数 × {W_CITATION:.0%}</p>
 </body>
 </html>
 """

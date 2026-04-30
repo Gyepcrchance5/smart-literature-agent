@@ -19,6 +19,7 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from enricher import enrich_all
 from utils import DATA_DIR, get_logger, load_keywords, run_deepxiv
 
 log = get_logger("searcher")
@@ -42,14 +43,16 @@ def _calc_date_from(lookback_days: int) -> str:
     return (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
 
 
-def search_all_fields(save: bool = True) -> dict[str, list[dict]]:
+def search_all_fields(save: bool = True, enrich: bool = True) -> dict[str, list[dict]]:
     """遍历所有领域关键词，返回 {field_name: [papers]}。
 
     每篇论文会被增加两个额外字段：
       _fields: [命中的领域 key 列表]
       _matched_keywords: [命中的关键词列表]
+      _openalex: OpenAlex 增强信号（enrich=True 时，由 enricher.enrich_all 填充）
 
     save=True 时落盘到 data/candidates_<YYYYMMDD>.json，便于增量调试。
+    enrich=True 时查 OpenAlex 补充 venue / citation / 作者信息。
     """
     cfg = load_keywords()
     search_cfg = cfg.get("search_config", {})
@@ -114,6 +117,11 @@ def search_all_fields(save: bool = True) -> dict[str, list[dict]]:
         len(merged),
         {f: len(ps) for f, ps in results.items()},
     )
+
+    # OpenAlex 增强：给每篇加 _openalex 字段（venue / citation / authors）
+    if enrich and merged:
+        log.info("开始 OpenAlex 增强 %d 篇候选（cache 命中免网络）...", len(merged))
+        enrich_all(list(merged.values()))
 
     if save:
         out = DATA_DIR / f"candidates_{datetime.now():%Y%m%d}.json"
