@@ -1,0 +1,42 @@
+# ============================================================
+# smart-literature-agent .gitignore
+# ============================================================
+
+# --- secrets & local config ---
+.env
+.env.local
+.env.*.local
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- virtual envs ---
+.venv/
+venv/
+env/
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- 运行时产物（含本地日志、用户个人检索结果） ---
+logs/
+output/
+data/candidates_*.json
+data/seen_ids.json
+data/failed_ids.json
+
+# 保留 data/ 目录本身（占位），避免新用户 clone 后 data/ 不存在导致报错
+!data/.gitkeep

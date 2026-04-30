@@ -1,0 +1,82 @@
+# smart-literature-agent 关键词配置
+# 六大研究领域 + 搜索/输出参数
+
+fields:
+  model_compression:
+    label: "模型压缩与轻量化"
+    keywords:
+      - "model compression"
+      - "lightweight model"
+      - "model pruning"
+      - "quantization"
+      - "neural architecture search"
+      - "efficient inference"
+      - "network slimming"
+      - "structured pruning"
+
+  knowledge_distillation:
+    label: "知识蒸馏"
+    keywords:
+      - "knowledge distillation"
+      - "teacher-student network"
+      - "feature distillation"
+      - "self-distillation"
+      - "online distillation"
+      - "dark knowledge"
+      - "logit distillation"
+
+  fault_diagnosis:
+    label: "故障诊断"
+    keywords:
+      - "fault diagnosis"
+      - "anomaly detection"
+      - "predictive maintenance"
+      - "bearing fault detection"
+      - "vibration analysis"
+      - "industrial monitoring"
+      - "machinery health"
+      - "rotating machinery"
+
+  deep_learning_methods:
+    label: "深度学习方法"
+    keywords:
+      - "deep learning"
+      - "transfer learning"
+      - "representation learning"
+      - "few-shot learning"
+      - "self-supervised learning"
+      - "contrastive learning"
+      - "domain adaptation"
+
+  edge_deployment:
+    label: "边缘部署与推理优化"
+    keywords:
+      - "edge deployment"
+      - "on-device inference"
+      - "TinyML"
+      - "mobile inference"
+      - "embedded AI"
+      - "latency optimization"
+      - "real-time inference"
+
+  interpretability:
+    label: "可解释性"
+    keywords:
+      - "explainable AI"
+      - "model interpretability"
+      - "attention visualization"
+      - "feature attribution"
+      - "saliency map"
+
+# 搜索配置
+search_config:
+  max_results_per_keyword: 10         # 每个关键词最多抓取数量
+  lookback_days: 7                    # 默认回溯天数
+  min_relevance_score: 3              # 最低相关性评分（1-5）
+
+# 输出配置
+output_config:
+  language: "zh"                      # 总结语言：中文
+  format: "markdown"                  # 输出格式
+  paper_dir: "output/papers"
+  report_dir: "output/reports"
