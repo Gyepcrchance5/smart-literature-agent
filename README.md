@@ -11,11 +11,12 @@
 1. **自动检索**：6 领域 × 40+ 关键词，调用 DeepXiv 遍历最近 7 天的新论文，按 DeepXiv score 过滤、去重后落盘候选清单。
 2. **OpenAlex 质量信号增强**：对每篇候选调 [OpenAlex API](https://openalex.org)（免费免 key），补充 **venue 类型**（期刊 / 会议 / 预印本）、**venue h-index**、**最新引用数**、**作者列表** —— 让新论文被顶会/顶刊接收后能自动被识别。DOI 查不到的老论文走 title search + 相似度校验 fallback。本地 JSON cache 避免重复查询。
 3. **智能精读**：按 `token_count` 分四档策略 —— `raw`（全文）/ `selected`（精选 Introduction/Method/Experiments/Conclusion）/ `preview`（10k 字符概要）/ `metadata_only`（DeepXiv 尚未 ingest 时的降级），对超 80k token 的长文也能优雅处理。
-4. **中文摘要 + 领域综述**：通过兼容 Anthropic Messages API 的 LLM 产出**结构化中文单篇摘要**（研究问题 / 核心方法 / 关键实验 / 六领域相关性 / 局限与启发）与**跨论文领域综述**（问题聚类 / 主流技术路线 / 常用数据集 / 开放问题 / 对研究者的具体迁移建议）。
+4. **中文技术解读 + 领域综述**：通过兼容 Anthropic Messages API 的 LLM 产出**结构化中文单篇技术解读**（方法拆解 / 关键公式解释 / 迁移映射 / 面向轴承故障诊断的技术路线 / 局限）与**跨论文领域综述**（问题聚类 / 主流技术路线 / 常用数据集 / 开放问题 / 对研究者的具体迁移建议）。
 5. **公式提取**：从 arXiv e-print 下载论文原始 LaTeX 源码，解析 `equation / align / eqnarray / gather / multline` 环境 + `$$/\\[/\\($ /\\(/$ ` 定界符，输出带**公式编号**、**\\label**、**前后 150 字上下文**的结构化 `.formulas.json` + 可读 `.formulas.md` + MathJax 渲染的 HTML。方便 AI 理解或直接拷贝到你自己写的论文里。
 6. **四维综合评分 + 本周 TOP10**：`composite = 45% × 启发式相关性 + 25% × DeepXiv score + 20% × Venue 档次 + 10% × 引用数`（每维归一到 0-100）。新论文有顶刊/顶会加成，老论文有引用加成，两条路都能筛出好东西。生成 TOP10 合并 markdown 报告。
 7. **HTML 渲染 + 自动打开浏览器**：所有 markdown 产物一键转 GitHub 风格 HTML + **MathJax** 公式渲染，生成总览 `index.html`（本周 TOP / 领域综述 / 单篇摘要 + 公式速览），跑完自动弹出。
-8. **增量 + 失败重试 + 定时调度**：`seen_ids` 增量去重，`metadata_only` 和 `failed` 不写 seen 以便下次重试；`schedule` 库每周一 08:07 常驻自动跑。
+8. **DeepScientist 投喂包导出**：把本周 TOP 论文、摘要、公式和迁移路线整理成 `output/deepscientist_bundle/`，生成 `startup_prompt.md` / `literature_brief.md` / `hypotheses.md`，用于启动 DeepScientist 研究 quest。
+9. **增量 + 失败重试 + 定时调度**：`seen_ids` 增量去重，`metadata_only` 和 `failed` 不写 seen 以便下次重试；`schedule` 库每周一 08:07 常驻自动跑。
 
 ### 规模数据（实测）
 
@@ -33,6 +34,7 @@
 - **支持第三方兼容代理**：通过 `ANTHROPIC_BASE_URL` + `LLM_MODEL` 即可切换直连官方或走兼容代理（含 cc-switch 等配置工具），不改一行代码。
 - **失败优雅降级**：DeepXiv 的 search 和 paper ingest 是两条管道，搜到不代表能读全文；四档精读策略 + `failed_ids` + 重试 flag 完整覆盖。
 - **结构化产物**：所有中间产物都是 markdown / JSON，方便下游 LLM Agent 二次消费（后续可 MCP 化）。
+- **面向 DeepScientist 的前置文献层**：本项目负责每周文献摄取、筛选、公式解释和迁移路线整理；DeepScientist 负责基于这些材料做 baseline 驱动的实验、finding 记忆和论文产出。
 
 ---
 
@@ -160,6 +162,34 @@ python src/reader.py <arxiv_id>           # 精读单篇
 python src/summarizer.py <arxiv_id>       # 单篇摘要
 python src/summarizer.py --field knowledge_distillation   # 指定领域综述
 ```
+
+### 导出 DeepScientist 投喂包
+
+本项目可以作为 DeepScientist 的前置文献情报层：先完成每周文献抓取、精读、公式提取和技术路线解读，再把少量高质量材料投喂给 DeepScientist 做后续实验规划与执行。
+
+```bash
+# 1) 先跑本项目流水线，得到候选、摘要、公式和 TOP 报告
+python src/run.py --no-open
+
+# 2) 导出 DeepScientist 启动材料（默认 TOP5）
+python src/deepscientist_exporter.py --top-n 5
+
+# 可选：指定你的故障诊断 baseline 代码路径
+python src/deepscientist_exporter.py --top-n 5 --baseline-path E:\codes\bearing-fault-baseline
+```
+
+导出目录：
+
+```
+output/deepscientist_bundle/
+├── manifest.json             # 本次导出的元数据和文件清单
+├── candidate_papers.json     # TOP 论文结构化清单
+├── literature_brief.md       # 给 DeepScientist 读的文献简报
+├── hypotheses.md             # 候选研究假设
+└── startup_prompt.md         # 可直接作为 DeepScientist quest 启动提示的材料
+```
+
+推荐只投喂 TOP3-TOP5，而不是把 85 篇候选全部交给 DeepScientist。DeepScientist 更适合消费“少量高质量、和 baseline 强相关”的研究材料。
 
 ## 产物位置
 

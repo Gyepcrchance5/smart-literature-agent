@@ -11,6 +11,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.1.1] — 2026-04-30
+
+Small integration release: make smart-literature-agent a feeder for DeepScientist.
+
+### Added
+
+- **DeepScientist bundle export** (`src/deepscientist_exporter.py`)
+  - Reads the latest `data/candidates_<date>.json`, generated `.summary.md`, `.formulas.md`, and composite scores.
+  - Exports a curated handoff package under `output/deepscientist_bundle/`.
+  - Generated files:
+    - `manifest.json`
+    - `candidate_papers.json`
+    - `literature_brief.md`
+    - `hypotheses.md`
+    - `startup_prompt.md`
+  - Supports `--top-n`, `--out-dir`, `--research-context`, and `--baseline-path`.
+- **DeepScientist workflow docs** in `README.md`
+  - Documents the intended role split:
+    `smart-literature-agent` = literature ingestion / filtering / technical interpretation,
+    DeepScientist = baseline-driven research execution / experiments / findings.
+  - Adds a two-command workflow:
+    `python src/run.py --no-open`
+    then `python src/deepscientist_exporter.py --top-n 5`.
+
+### Changed
+
+- **Single-paper summaries are now DeepScientist-oriented**
+  - The prompt reads selected formula context from `.formulas.json`.
+  - Output now emphasizes method decomposition, key formula explanation, transfer mapping, and a concrete route for bearing fault diagnosis + compression/distillation + edge deployment.
+- **Pipeline order changed**
+  - Formula extraction now runs before the LLM stage, so summaries can explain formulas.
+- **LLM token budgets raised for MiniMax-M2.7**
+  - `SINGLE_SUMMARY_MAX_TOKENS = 12000`
+  - `FIELD_REPORT_MAX_TOKENS = 16000`
+  - `MAX_CONTEXT_CHARS = 100000`
+  - `MAX_FORMULA_CONTEXT_CHARS = 16000`
+- **Run CLI**
+  - Added `python src/run.py --regen-summary` to force regeneration of existing `.summary.md` files after prompt upgrades.
+
+### Validation
+
+- Re-generated `2604.22276.summary.md` with the new method/formula/transfer-route template.
+- Verified dry run: `python src/run.py --skip-search --no-llm --no-open --max-read 0`.
+- Verified exporter: `python src/deepscientist_exporter.py --top-n 3`.
+
+---
+
 ## [1.1.0] — 2026-04-30
 
 第一次 feature release。围绕"让综合评分更准 + 公式可复用"两个主题。

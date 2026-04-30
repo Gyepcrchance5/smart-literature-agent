@@ -10,7 +10,7 @@
 
 ## 当前状态（以最新 git log 为准；本文件在 release 时同步更新）
 
-- **最新版本**：v1.1.0（2026-04-30）
+- **最新版本**：v1.1.1（2026-04-30）
 - **Phase 1 (local dev machine)**：✅ 完成
   - 数据源：arXiv（via DeepXiv）
   - 公式提取：arXiv e-print LaTeX 源码 → equation/align/eqnarray 等环境解析
@@ -61,6 +61,7 @@
 | `pdf_handler.py` | [Phase 2 stub] PDF → 公式提取（计划接 MinerU） | `extract_from_pdf()` |
 | `html_handler.py` | [Phase 2 stub] HTML → 公式提取（计划写期刊 adapter） | `extract_from_html()` |
 | `reporter.py` | composite_score 4 维评分 + weekly TOP10 合并 + HTML 渲染 + MathJax 注入 + 浏览器自动打开 | `composite_score()` / `generate_weekly_top10()` / `render_html_all()` |
+| `deepscientist_exporter.py` | DeepScientist 投喂包导出：TOP 论文、摘要、公式、候选假设、startup prompt | `export_bundle()` |
 | `run.py` | Pipeline orchestrator + CLI flags + schedule 常驻每周一 08:07 | `pipeline_run()` / `run_daemon()` |
 
 ## 核心设计决策（& 为什么）

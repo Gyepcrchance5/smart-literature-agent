@@ -11,10 +11,23 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
-from anthropic import Anthropic
+from anthropic import Anthropic as _Anthropic
+
+
+def Anthropic(*args, **kwargs):
+    """Create an Anthropic client, adding MiniMax bearer auth when needed."""
+    base_url = kwargs.get("base_url")
+    api_key = kwargs.get("api_key")
+    base_url_text = str(base_url or "")
+    if api_key and ("minimax.com" in base_url_text or "minimax.io" in base_url_text):
+        headers = dict(kwargs.get("default_headers") or {})
+        headers.setdefault("Authorization", f"Bearer {api_key}")
+        kwargs["default_headers"] = headers
+    return _Anthropic(*args, **kwargs)
 
 from utils import (
     OUTPUT_DIR,
@@ -32,16 +45,38 @@ REPORTS_DIR = OUTPUT_DIR / "reports"
 # 默认值是一个示例路由名（配合兼容 Anthropic 协议的第三方代理使用），
 # 克隆本仓库后请在 .env 或环境变量里设为你自己的模型 ID，例如
 #   LLM_MODEL=claude-haiku-4-5-20251001
-DEFAULT_MODEL = os.environ.get("LLM_MODEL", "xiaomi/mimo-v2.5-pro")
+DEFAULT_MODEL = os.environ.get("LLM_MODEL", "MiniMax-M2.7")
 
 # 单篇摘要的最大输出长度（tokens）
 # 注意：部分 reasoning model 的 thinking 过程也记在 output_tokens 里，
 # 所以上限要给得宽一些，否则会在"思考完→正式输出到一半"时被截断。
-SINGLE_SUMMARY_MAX_TOKENS = 3000
+SINGLE_SUMMARY_MAX_TOKENS = 12000
 # 领域报告的最大输出长度
-FIELD_REPORT_MAX_TOKENS = 6000
+FIELD_REPORT_MAX_TOKENS = 16000
 # 喂给模型的论文正文最多多少字符（避免超 context，同时控制成本）
-MAX_CONTEXT_CHARS = 40000
+MAX_CONTEXT_CHARS = 100000
+MAX_FORMULA_CONTEXT_CHARS = 16000
+
+FORMULA_IMPORTANCE_KEYWORDS = (
+    "loss",
+    "objective",
+    "optimization",
+    "arg",
+    "max",
+    "min",
+    "attention",
+    "distillation",
+    "student",
+    "teacher",
+    "prune",
+    "quant",
+    "score",
+    "similarity",
+    "reconstruction",
+    "regularization",
+    "constraint",
+    "error",
+)
 
 
 def _client() -> Anthropic:
@@ -92,6 +127,8 @@ def _extract_content(paper_data: dict) -> str:
 
 def _author_list(paper_data: dict, n: int = 3) -> str:
     authors = paper_data.get("authors") or []
+    if isinstance(authors, str):
+        return authors
     names = [a.get("name", "") for a in authors if isinstance(a, dict)]
     if not names:
         return "未知"
@@ -100,13 +137,95 @@ def _author_list(paper_data: dict, n: int = 3) -> str:
     return f"{'、'.join(names[:n])} et al.（共 {len(names)} 人）"
 
 
+def _formula_score(formula: dict) -> int:
+    """Heuristic score for selecting formulas that explain the method."""
+    text = " ".join(
+        str(formula.get(k) or "")
+        for k in ("label", "latex", "context_before", "context_after")
+    ).lower()
+    score = 0
+    if formula.get("type") == "display":
+        score += 10
+    if formula.get("numbered"):
+        score += 4
+    if formula.get("label"):
+        score += 3
+    score += sum(2 for kw in FORMULA_IMPORTANCE_KEYWORDS if kw in text)
+    latex = str(formula.get("latex") or "")
+    if re.search(r"\\mathop|\\operatorname|\\sum|\\prod|\\frac|\\min|\\max|\\arg", latex):
+        score += 2
+    return score
+
+
+def _load_formula_context(arxiv_id: str, max_display: int = 6) -> str:
+    """Load selected formulas for the LLM prompt.
+
+    Formula extraction is intentionally separate from summarization; this helper
+    turns the saved JSON into a compact prompt block with context.
+    """
+    safe_id = arxiv_id.replace("/", "_")
+    path = PAPERS_DIR / f"{safe_id}.formulas.json"
+    if not path.exists():
+        return "（未找到公式提取结果。本次摘要只能基于正文生成。）"
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "（公式提取结果无法读取。本次摘要只能基于正文生成。）"
+
+    formulas = [
+        f for f in payload.get("formulas", [])
+        if isinstance(f, dict) and f.get("type") == "display" and f.get("latex")
+    ]
+    if not formulas:
+        return "（未提取到 display 公式。若论文主要使用行内公式，请参考公式速览页。）"
+
+    ranked = sorted(
+        formulas,
+        key=lambda f: (_formula_score(f), -(f.get("char_start") or 0)),
+        reverse=True,
+    )[:max_display]
+    selected = sorted(ranked, key=lambda f: (f.get("eq_num") is None, f.get("eq_num") or 9999, f.get("char_start") or 0))
+
+    lines = [
+        f"共提取 display 公式 {payload.get('counts', {}).get('display', len(formulas))} 条；以下是按方法解释价值筛选的关键公式候选：",
+        "",
+    ]
+    for f in selected:
+        meta = [f.get("id", "formula")]
+        if f.get("eq_num") is not None:
+            meta.append(f"Eq.{f['eq_num']}")
+        if f.get("label"):
+            meta.append(f"label={f['label']}")
+        before = re.sub(r"\s+", " ", str(f.get("context_before") or "")).strip()
+        after = re.sub(r"\s+", " ", str(f.get("context_after") or "")).strip()
+        lines.extend(
+            [
+                f"### {' · '.join(meta)}",
+                f"上下文前：{before[-220:]}",
+                "```latex",
+                str(f.get("latex")),
+                "```",
+                f"上下文后：{after[:220]}",
+                "",
+            ]
+        )
+
+    block = "\n".join(lines)
+    if len(block) > MAX_FORMULA_CONTEXT_CHARS:
+        block = block[:MAX_FORMULA_CONTEXT_CHARS] + "\n\n[...公式上下文过长已截断...]"
+    return block
+
+
 def _build_single_paper_prompt(paper_data: dict, fields_config: dict) -> str:
     field_labels = [fc.get("label", k) for k, fc in fields_config.items()]
     content = _extract_content(paper_data)
-    return f"""你是深度学习领域的资深研究员。请基于下面这篇 arXiv 论文的内容，产出一份**结构化中文摘要**。
+    arxiv_id = paper_data.get("arxiv_id")
+    formula_context = _load_formula_context(str(arxiv_id))
+    return f"""你是深度学习、模型压缩、故障诊断和边缘部署方向的资深研究员。请基于下面这篇 arXiv 论文的正文与关键公式，产出一份**能帮助研究者看懂方法并判断迁移价值**的中文技术解读。
 
 【论文元数据】
-- arxiv_id: {paper_data.get('arxiv_id')}
+- arxiv_id: {arxiv_id}
 - 英文标题: {paper_data.get('title')}
 - 作者: {_author_list(paper_data)}
 - 发表时间: {paper_data.get('publish_at')}
@@ -118,26 +237,55 @@ def _build_single_paper_prompt(paper_data: dict, fields_config: dict) -> str:
 【论文正文（部分）】
 {content}
 
-请严格按照以下 Markdown 模板输出，每节 2-4 句即可，不要套话也不要扩写。相关性部分要诚实：无关就写"无直接相关"。
+【关键公式候选】
+{formula_context}
+
+请严格按照以下 Markdown 模板输出。重点解释"作者到底做了什么、怎么做、关键变量/公式在流程里的作用"。不要空泛复述摘要；如果正文或公式不足，明确说明证据不足。
 
 # {{中文标题}}
-**arXiv**：[{paper_data.get('arxiv_id')}](https://arxiv.org/abs/{paper_data.get('arxiv_id')}) | **作者**：{_author_list(paper_data)} | **发表**：{paper_data.get('publish_at')}
+**arXiv**：[{arxiv_id}](https://arxiv.org/abs/{arxiv_id}) | **作者**：{_author_list(paper_data)} | **发表**：{paper_data.get('publish_at')}
 
-## 研究问题
-（1-2 句，本文想解决的核心问题）
+## 一句话结论
+（1-2 句：本文提出了什么，解决什么痛点，最核心的技术抓手是什么）
 
-## 核心方法
-（2-4 句，关键思路、模块、损失函数等；避免公式细节）
+## 方法拆解
+### Step 1：问题建模与输入输出
+（说明输入、输出、目标变量，以及论文如何把问题形式化）
+
+### Step 2：核心模块与信息流
+（按模块/阶段拆解，不少于 3 点；说明每个模块接收什么、输出什么、为什么需要它）
+
+### Step 3：训练或推理流程
+（说明训练损失、推理步骤、搜索/剪枝/量化/蒸馏等流程；如果论文只有推理方法也要说清楚）
+
+## 关键公式解释
+选择 2-5 个最关键公式。每个公式按下面格式写：
+
+**公式 X：作用标题**
+$$
+公式 LaTeX
+$$
+- **符号含义**：解释主要变量，不要逐字翻译。
+- **方法作用**：说明它约束/优化/计算了什么。
+- **迁移映射**：如果迁移到轴承故障诊断，这个公式中的输入、标签、目标或约束分别可对应什么。
 
 ## 关键实验结果
-（2-3 句，在什么数据集上、对比了谁、提升多少）
+（列出数据集/任务、baseline、关键指标和提升幅度；没有数字就说明论文未提供或正文未读到）
 
 ## 与六大研究方向的相关性
 逐一评估本文与下列方向的相关性（高/中/低/无），简短说明一句为什么：
 {chr(10).join('- ' + lbl for lbl in field_labels)}
 
-## 局限与启发
-（2-3 句，作者自述或你判断的局限，以及对做 **轴承故障诊断 + 模型压缩/知识蒸馏 + 边缘部署** 的研究者有什么启发）
+## 可迁移技术路线
+面向 **轴承故障诊断 + 模型压缩/知识蒸馏 + 边缘部署** 给出一条可执行路线，必须包含：
+1. **可迁移组件**：本文哪一个模块/公式/训练策略值得迁移。
+2. **融合方式**：如何与 CWRU/PU 跨域故障诊断、FA-KD、剪枝或量化结合。
+3. **训练目标**：建议的损失函数组合或优化目标。
+4. **部署路径**：边缘端如何落地，哪些部分离线做，哪些部分在线推理。
+5. **风险点**：至少 2 个可能失败的原因和验证方法。
+
+## 局限
+（作者自述或你判断的局限；区分论文自身局限和迁移到故障诊断时的额外风险）
 """
 
 

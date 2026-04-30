@@ -18,6 +18,26 @@ DATA_DIR = PROJECT_ROOT / "data"
 LOGS_DIR = PROJECT_ROOT / "logs"
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
+
+def _load_project_env() -> None:
+    """Load repo-local .env values without overriding the active shell."""
+    env_path = PROJECT_ROOT / ".env"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_project_env()
+
 # Windows 下 Python 默认 stdout 用 GBK，输出 emoji 会 UnicodeEncodeError。
 # DeepXiv CLI 里用了 emoji，所以子进程必须强制 UTF-8。
 _UTF8_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}

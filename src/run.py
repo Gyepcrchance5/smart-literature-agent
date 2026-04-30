@@ -93,14 +93,15 @@ def pipeline_run(
     auto_open: bool = True,
     skip_report: bool = False,
     skip_formulas: bool = False,
+    regen_summary: bool = False,
 ) -> dict:
     """一次完整的增量运行，返回统计信息。"""
     started = datetime.now()
     log.info("=" * 70)
     log.info("PIPELINE RUN START @ %s", started.isoformat(timespec="seconds"))
     log.info(
-        "  max_read=%d retry_failed=%s skip_search=%s skip_llm=%s field=%s",
-        max_read, retry_failed, skip_search, skip_llm, field_filter,
+        "  max_read=%d retry_failed=%s skip_search=%s skip_llm=%s regen_summary=%s field=%s",
+        max_read, retry_failed, skip_search, skip_llm, regen_summary, field_filter,
     )
     stats: dict = {"started_at": started.isoformat(timespec="seconds")}
 
@@ -178,20 +179,12 @@ def pipeline_run(
         skipped_failed=skipped_failed,
     )
 
-    if skip_llm:
-        log.info("[3/5 llm] 跳过（--no-llm）")
-        stats["summarized"] = 0
-        stats["reports_generated"] = 0
-    else:
-        # ---------- 3/5 summarize + field_report ----------
-        _run_llm_stage(stats, field_index, field_filter)
-
-    # ---------- 4/5 formulas：从 arXiv 源码提取公式 ----------
+    # ---------- 3/5 formulas：先提公式，摘要阶段才能解释关键公式 ----------
     if skip_formulas:
-        log.info("[4/5 formulas] 跳过（--skip-formulas）")
+        log.info("[3/5 formulas] 跳过（--skip-formulas）")
         stats["formulas_extracted"] = 0
     else:
-        log.info("[4/5 formulas] 从 arXiv 源码提取公式")
+        log.info("[3/5 formulas] 从 arXiv 源码提取公式")
         formulas_done = 0
         formulas_fail = 0
         for paper_json in sorted(PAPERS_DIR.glob("*.json")):
@@ -213,6 +206,14 @@ def pipeline_run(
         log.info("  本轮新提取公式：%d 篇（失败 %d）", formulas_done, formulas_fail)
         stats["formulas_extracted"] = formulas_done
         stats["formulas_failed"] = formulas_fail
+
+    if skip_llm:
+        log.info("[4/5 llm] 跳过（--no-llm）")
+        stats["summarized"] = 0
+        stats["reports_generated"] = 0
+    else:
+        # ---------- 4/5 summarize + field_report ----------
+        _run_llm_stage(stats, field_index, field_filter, regen_summary=regen_summary)
 
     # ---------- 5/5 report：TOP10 + HTML + 自动打开 ----------
     if skip_report:
@@ -239,15 +240,20 @@ def pipeline_run(
     return stats
 
 
-def _run_llm_stage(stats: dict, field_index: dict[str, list[str]], field_filter: str | None) -> None:
+def _run_llm_stage(
+    stats: dict,
+    field_index: dict[str, list[str]],
+    field_filter: str | None,
+    regen_summary: bool = False,
+) -> None:
     """原 3/3 阶段抽成函数，便于 skip_llm 分支整洁。"""
-    log.info("[3/5 llm] 生成摘要和综述")
+    log.info("[4/5 llm] 生成摘要和综述%s", "（强制重写摘要）" if regen_summary else "")
 
     # 3a: 对所有已 read 但没 summary 的论文补摘要
     summarized = 0
     for paper_json in sorted(PAPERS_DIR.glob("*.json")):
         aid = paper_json.stem
-        if _has_summary(aid):
+        if _has_summary(aid) and not regen_summary:
             continue
         try:
             paper = load_paper(aid)
@@ -331,6 +337,8 @@ def main():
                         help="跳过 TOP10 + HTML 渲染阶段（只跑 search/read/summary）")
     parser.add_argument("--skip-formulas", action="store_true",
                         help="跳过从 arXiv 源码提取公式的阶段")
+    parser.add_argument("--regen-summary", action="store_true",
+                        help="强制重写已有 .summary.md（会重新调用 LLM）")
     parser.add_argument("--verify-schedule", action="store_true",
                         help=argparse.SUPPRESS)  # 内部：注册调度后立即退出，用于冒烟
     args = parser.parse_args()
@@ -345,6 +353,7 @@ def main():
         auto_open=not args.no_open,
         skip_report=args.skip_report,
         skip_formulas=args.skip_formulas,
+        regen_summary=args.regen_summary,
     )
 
     if args.verify_schedule:
