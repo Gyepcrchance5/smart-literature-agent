@@ -19,19 +19,33 @@ from anthropic import Anthropic as _Anthropic
 
 
 def Anthropic(*args, **kwargs):
-    """Create an Anthropic client, adding MiniMax bearer auth when needed."""
-    base_url = kwargs.get("base_url")
-    api_key = kwargs.get("api_key")
-    base_url_text = str(base_url or "")
-    if api_key and ("minimax.com" in base_url_text or "minimax.io" in base_url_text):
+    """Create an Anthropic client, applying provider-preset auth when needed."""
+    llm = get_llm_config()
+    api_key = kwargs.get("api_key") or llm["api_key"]
+    base_url = kwargs.get("base_url") or llm["base_url"]
+
+    if llm["auth_mode"] == "bearer" and api_key:
         headers = dict(kwargs.get("default_headers") or {})
         headers.setdefault("Authorization", f"Bearer {api_key}")
         kwargs["default_headers"] = headers
+        kwargs["api_key"] = None
+        _saved = os.environ.pop("ANTHROPIC_API_KEY", None)
+        try:
+            return _Anthropic(*args, **kwargs)
+        finally:
+            if _saved is not None:
+                os.environ["ANTHROPIC_API_KEY"] = _saved
+
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
     return _Anthropic(*args, **kwargs)
 
 from utils import (
     OUTPUT_DIR,
     get_anthropic_config,
+    get_llm_config,
     get_logger,
     load_keywords,
 )
@@ -41,11 +55,9 @@ log = get_logger("summarizer")
 PAPERS_DIR = OUTPUT_DIR / "papers"
 REPORTS_DIR = OUTPUT_DIR / "reports"
 
-# 默认模型：可通过环境变量 LLM_MODEL 覆盖。
-# 默认值是一个示例路由名（配合兼容 Anthropic 协议的第三方代理使用），
-# 克隆本仓库后请在 .env 或环境变量里设为你自己的模型 ID，例如
-#   LLM_MODEL=claude-haiku-4-5-20251001
-DEFAULT_MODEL = os.environ.get("LLM_MODEL", "MiniMax-M2.7")
+# 默认模型：通过 LLM_PROVIDER + LLM_MODEL 选择（fallback get_llm_config()）
+# 克隆本仓库后请在 .env 设置 LLM_PROVIDER 和 ANTHROPIC_API_KEY
+DEFAULT_MODEL = get_llm_config()["model"]
 
 # 单篇摘要的最大输出长度（tokens）
 # 注意：部分 reasoning model 的 thinking 过程也记在 output_tokens 里，
@@ -80,14 +92,17 @@ FORMULA_IMPORTANCE_KEYWORDS = (
 
 
 def _client() -> Anthropic:
-    """创建 Anthropic 客户端（支持自定义 base_url，适配国内代理）。"""
-    cfg = get_anthropic_config()
-    if not cfg.get("api_key"):
+    """创建 Anthropic 客户端（通过 get_llm_config 读取 provider 预设）。"""
+    llm = get_llm_config()
+    if not llm.get("api_key"):
         raise RuntimeError(
-            "未找到 ANTHROPIC_API_KEY。请检查环境变量或 ~/.claude/settings.json 的 env 段。"
+            "未找到 API key。请设置 ANTHROPIC_API_KEY 环境变量，或检查 ~/.claude/settings.json。"
         )
-    log.info("Anthropic 客户端 base_url=%s（key 已隐藏）", cfg.get("base_url") or "<default>")
-    return Anthropic(api_key=cfg["api_key"], base_url=cfg.get("base_url"))
+    log.info(
+        "LLM 客户端: provider=%s model=%s base_url=%s",
+        llm["provider_label"], llm["model"], llm["base_url"] or "<official>",
+    )
+    return Anthropic(api_key=llm["api_key"], base_url=llm["base_url"])
 
 
 def _extract_content(paper_data: dict) -> str:

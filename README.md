@@ -1,6 +1,6 @@
 # smart-literature-agent
 
-> **一句话**：基于 DeepXiv SDK 与 Anthropic Messages API 的自动化科研文献智能体 —— 每周自动抓取 6 大研究方向的 arXiv 新论文、按 token 预算分级精读、用 LLM 产出中文摘要与跨论文领域综述，综合评分输出本周 TOP10 合并报告 + 静态 HTML 索引，每周一 08:07 定时跑完自动在浏览器弹出。
+> **一句话**：基于 DeepXiv SDK 与 Anthropic Messages API 的个人科研文献智能体 —— 交互式仪表盘一键启动，抓取 6 大研究方向的 arXiv 新论文 + 历史回溯 5 年、按 token 预算分级精读、用 LLM 产出中文摘要与跨论文领域综述 + 模块融合创新分析，综合评分输出本周 TOP10 合并报告 + 带 MathJax 的静态 HTML 索引。
 
 ## 项目简介
 
@@ -16,7 +16,7 @@
 6. **四维综合评分 + 本周 TOP10**：`composite = 45% × 启发式相关性 + 25% × DeepXiv score + 20% × Venue 档次 + 10% × 引用数`（每维归一到 0-100）。新论文有顶刊/顶会加成，老论文有引用加成，两条路都能筛出好东西。生成 TOP10 合并 markdown 报告。
 7. **HTML 渲染 + 自动打开浏览器**：所有 markdown 产物一键转 GitHub 风格 HTML + **MathJax** 公式渲染，生成总览 `index.html`（本周 TOP / 领域综述 / 单篇摘要 + 公式速览），跑完自动弹出。
 8. **DeepScientist 投喂包导出**：把本周 TOP 论文、摘要、公式和迁移路线整理成 `output/deepscientist_bundle/`，生成 `startup_prompt.md` / `literature_brief.md` / `hypotheses.md`，用于启动 DeepScientist 研究 quest。
-9. **增量 + 失败重试 + 定时调度**：`seen_ids` 增量去重，`metadata_only` 和 `failed` 不写 seen 以便下次重试；`schedule` 库每周一 08:07 常驻自动跑。
+9. **交互式启动器 + 增量 + 失败重试**：`python start.py` 仪表盘一键运行，实时展示项目状态；`seen_ids` 增量去重，`metadata_only` 和 `failed` 不写 seen 以便下次重试。
 
 ### 规模数据（实测）
 
@@ -26,7 +26,7 @@
 | Token 消耗 | **~7 万 Token**（~49k input + 22k output） |
 | 覆盖关键词 | 42 个（6 领域） |
 | 输出文件类型 | 5 种：候选清单 JSON / 精读 JSON / 单篇 summary markdown / 领域综述 / HTML 索引页 |
-| 运行模式 | 常驻 + 定时（`schedule` + `os.startfile` 开浏览器），全程无人值守 |
+| 运行模式 | 交互式启动器（`python start.py`），手动触发，全程可控 |
 
 ### 设计亮点
 
@@ -134,9 +134,8 @@ python src/run.py --no-open               # 跑完不自动开浏览器
 python src/run.py --top-n 20              # TOP N 改成 20
 python src/run.py --field knowledge_distillation   # 只对指定领域生成综述
 
-# 常驻定时（每周一 08:07 自动运行）
-python src/run.py --daemon                # 启动时先跑一次
-python src/run.py --daemon --no-initial-run   # 只等调度触发，不立即跑
+# 交互式启动器（推荐）
+python start.py                            # 仪表盘 + 菜单选择
 
 # 独立运行各阶段（方便调试）
 python src/reporter.py --top10            # 只重算 TOP10
@@ -237,10 +236,11 @@ composite = 50% × 启发式相关性（6 领域 × 1-5 分总和 / 30）
 - [x] **步骤 1**：项目骨架 + conda 环境 + DeepXiv CLI 验证
 - [x] **步骤 2**：接入 DeepXiv search / paper，批量检索 + 全文策略化读
 - [x] **步骤 3**：接入 LLM（通过 Anthropic Messages API，模型可配置），单篇中文摘要 + 跨论文领域综述
-- [x] **步骤 4**：一键流水线 `run.py` + `schedule` 库定时（增量 / 失败重试）
+- [x] **步骤 4**：一键流水线 `run.py` + 交互式启动器 `start.py`（增量 / 失败重试）
 - [x] **步骤 5**：综合评分 + 本周 TOP10 合并报告 + HTML 渲染 + 自动开浏览器
 - [x] **步骤 6a (Phase 1)**：arXiv 论文公式提取（下载 e-print → 解析 LaTeX → 带编号/label/上下文的结构化产物）
-- [ ] **步骤 6b (Phase 2)**：PDF / HTML 论文公式提取（部署到校园网电脑后启用，见下方部署指南）
+- [x] **步骤 7 (v1.2.0)**：跨论文综合创新分析 `synthesizer.py` + 公式交叉引用 + 融合公式输出 + 历史论文池 + LLM Provider 预设系统 + 交互式启动器 `start.py`
+- [ ] **步骤 8 (Phase 2)**：PDF / HTML 论文公式提取（部署到校园网电脑后启用，见下方部署指南）
 
 ## Phase 2 部署指南（仅在可访问 IEEE/ScienceDirect 等数据库的校园网电脑上启用）
 

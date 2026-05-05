@@ -29,11 +29,14 @@ def search_keyword(
     keyword: str,
     max_results: int = 10,
     date_from: str | None = None,
+    date_to: str | None = None,
 ) -> list[dict]:
     """对单个关键词调用 deepxiv search，返回论文列表。"""
     args = ["search", keyword, "--limit", str(max_results)]
     if date_from:
         args += ["--date-from", date_from]
+    if date_to:
+        args += ["--date-to", date_to]
     data = run_deepxiv(args, parse_json=True)
     return data.get("result", []) if isinstance(data, dict) else []
 
@@ -139,12 +142,92 @@ def search_all_fields(save: bool = True, enrich: bool = True) -> dict[str, list[
     return results
 
 
+def build_historical_pool(save: bool = True, enrich: bool = True) -> dict:
+    """一次性回溯搜索 3-5 年，构建历史论文池。
+
+    与 search_all_fields() 的区别：
+      - date_from = now - historical_lookback_years
+      - date_to   = now - lookback_days（与每周窗口不重叠）
+      - 结果数更多（historical_max_results_per_keyword）
+      - 保存到 data/candidates_historical_pool.json（无日期后缀，作为活跃池）
+    """
+    cfg = load_keywords()
+    search_cfg = cfg.get("search_config", {})
+    lookback_days = int(search_cfg.get("lookback_days", 7))
+    hist_years = int(search_cfg.get("historical_lookback_years", 5))
+    max_per_kw = int(search_cfg.get("historical_max_results_per_keyword", 20))
+    min_score = float(search_cfg.get("min_relevance_score", 0))
+
+    date_from = (datetime.now() - timedelta(days=hist_years * 365)).strftime("%Y-%m-%d")
+    date_to = _calc_date_from(lookback_days)
+
+    log.info(
+        "开始构建历史论文池：领域=%d，每关键词上限=%d，时间窗 %s → %s，分数阈值=%.2f",
+        len(cfg["fields"]), max_per_kw, date_from, date_to, min_score,
+    )
+
+    merged: dict[str, dict] = {}
+    for field_key, field_conf in cfg["fields"].items():
+        for kw in field_conf.get("keywords", []):
+            try:
+                papers = search_keyword(kw, max_results=max_per_kw,
+                                        date_from=date_from, date_to=date_to)
+            except Exception as e:
+                log.warning("历史搜索 [%s / %s] 失败：%s", field_key, kw, e)
+                continue
+            kept = 0
+            for p in papers:
+                score = float(p.get("score", 0) or 0)
+                if score < min_score:
+                    continue
+                aid = p.get("arxiv_id")
+                if not aid:
+                    continue
+                if aid not in merged:
+                    p["_fields"] = [field_key]
+                    p["_matched_keywords"] = [kw]
+                    merged[aid] = p
+                    kept += 1
+                else:
+                    if field_key not in merged[aid]["_fields"]:
+                        merged[aid]["_fields"].append(field_key)
+                    if kw not in merged[aid]["_matched_keywords"]:
+                        merged[aid]["_matched_keywords"].append(kw)
+            log.info("  [历史/%s / %s] 原始=%d，通过阈值=%d", field_key, kw, len(papers), kept)
+
+    log.info("历史池构建完成：去重后共 %d 篇", len(merged))
+
+    if enrich and merged:
+        log.info("开始 OpenAlex 增强 %d 篇历史候选...", len(merged))
+        enrich_all(list(merged.values()))
+
+    if save:
+        out = DATA_DIR / "candidates_historical_pool.json"
+        payload = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "date_from": date_from,
+            "date_to": date_to,
+            "window_type": "historical",
+            "total": len(merged),
+            "papers": sorted(list(merged.values()), key=lambda p: float(p.get("score", 0) or 0), reverse=True),
+        }
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.info("历史池已保存：%s（前 10 高分见上方日志）", out)
+        # 打印 top 10 预览
+        top10 = sorted(merged.values(), key=lambda p: float(p.get("score", 0) or 0), reverse=True)[:10]
+        for i, p in enumerate(top10, 1):
+            log.info("  #%d [%s] score=%.2f %s", i, p.get("arxiv_id"), p.get("score", 0), (p.get("title") or "")[:60])
+
+    return {}
+
+
 if __name__ == "__main__":
-    # 默认冒烟：单关键词
-    # 真实全量跑：python src/searcher.py --all
     import sys
 
-    if "--all" in sys.argv:
+    if "--historical" in sys.argv:
+        build_historical_pool()
+    elif "--all" in sys.argv:
         search_all_fields(save=True)
     else:
         papers = search_keyword("knowledge distillation", max_results=2)

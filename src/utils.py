@@ -136,6 +136,50 @@ def get_anthropic_config() -> dict[str, str | None]:
     return {"api_key": api_key, "base_url": base_url}
 
 
+def get_llm_config() -> dict:
+    """Resolve LLM config from provider preset (keywords.yaml) + env vars.
+
+    Returns:
+        {
+            "api_key": str,           # resolved API key
+            "base_url": str,          # "" = Anthropic SDK default
+            "model": str,             # e.g. "deepseek-v4-pro"
+            "auth_mode": str,         # "" = SDK default x-api-key, "bearer"
+            "provider_label": str,    # human-readable, e.g. "DeepSeek"
+            "provider_key": str,      # provider name in config, e.g. "deepseek"
+        }
+    """
+    provider_key = os.environ.get("LLM_PROVIDER", "")
+    providers = load_keywords().get("providers", {}) if provider_key else {}
+
+    if provider_key in providers:
+        p = providers[provider_key]
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        base_url = p.get("base_url", "")
+        model = os.environ.get("LLM_MODEL") or p.get("models", [""])[0]
+        auth_mode = p.get("auth_mode", "")
+        return {
+            "api_key": api_key,
+            "base_url": base_url,
+            "model": model,
+            "auth_mode": auth_mode,
+            "provider_label": p.get("label", provider_key),
+            "provider_key": provider_key,
+        }
+
+    # backward compat: no LLM_PROVIDER set
+    cfg = get_anthropic_config()
+    model = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
+    return {
+        "api_key": cfg["api_key"] or "",
+        "base_url": cfg.get("base_url") or "",
+        "model": model,
+        "auth_mode": "",
+        "provider_label": "自定义",
+        "provider_key": "",
+    }
+
+
 def run_deepxiv(args: list[str], parse_json: bool = False, timeout: int = 60) -> str | dict | list:
     """调用 deepxiv CLI 子进程，强制 UTF-8，避开 Windows GBK 陷阱。
 

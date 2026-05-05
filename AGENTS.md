@@ -6,11 +6,11 @@
 
 ## 一句话
 
-**smart-literature-agent**：一个面向个人科研的**自动化文献跟踪智能体**。每周自动抓 arXiv 新论文 → OpenAlex 质量信号增强 → LLM 生成中文摘要与领域综述 → 提取论文 LaTeX 公式 → 综合评分输出本周 TOP10 合并报告 + 带 MathJax 的静态 HTML 索引 → 每周一 08:07 定时自动运行并自动开浏览器。
+**smart-literature-agent**：一个面向个人科研的**交互式文献跟踪智能体**。通过 `python start.py` 一键启动，抓取 arXiv 新论文 + 回溯 5 年历史 → OpenAlex 质量信号增强 → LLM 生成中文摘要与领域综述 → 提取论文 LaTeX 公式 → 综合评分输出本周 TOP10 合并报告 + 跨论文综合创新分析 + 带 MathJax 的静态 HTML 索引。
 
 ## 当前状态（以最新 git log 为准；本文件在 release 时同步更新）
 
-- **最新版本**：v1.1.1（2026-04-30）
+- **最新版本**：v1.2.0（2026-05-01）
 - **Phase 1 (local dev machine)**：✅ 完成
   - 数据源：arXiv（via DeepXiv）
   - 公式提取：arXiv e-print LaTeX 源码 → equation/align/eqnarray 等环境解析
@@ -61,8 +61,11 @@
 | `pdf_handler.py` | [Phase 2 stub] PDF → 公式提取（计划接 MinerU） | `extract_from_pdf()` |
 | `html_handler.py` | [Phase 2 stub] HTML → 公式提取（计划写期刊 adapter） | `extract_from_html()` |
 | `reporter.py` | composite_score 4 维评分 + weekly TOP10 合并 + HTML 渲染 + MathJax 注入 + 浏览器自动打开 | `composite_score()` / `generate_weekly_top10()` / `render_html_all()` |
+| `synthesizer.py` | 跨论文综合创新分析：公式交叉引用 / 相似度预计算 / 模块融合方向 / 融合公式提取 | `synthesize_top_papers()` |
 | `deepscientist_exporter.py` | DeepScientist 投喂包导出：TOP 论文、摘要、公式、候选假设、startup prompt | `export_bundle()` |
-| `run.py` | Pipeline orchestrator + CLI flags + schedule 常驻每周一 08:07 | `pipeline_run()` / `run_daemon()` |
+| `reporter.py` | 4 维综合评分 + TOP10 合并 + HTML 渲染 + MathJax 注入 + 公式保护 | `composite_score()` / `render_html_all()` |
+| `run.py` | Pipeline orchestrator + CLI flags | `pipeline_run()` |
+| `start.py` | 交互式启动器：仪表盘 / 菜单 / LLM Provider 切换 / 参数调整 | `main()` |
 
 ## 核心设计决策（& 为什么）
 
@@ -234,7 +237,7 @@ git diff --cached | grep -iE "mify|ChengRui|sk-ant-[a-zA-Z0-9]{20,}|@qq\\.com"
 
 - 新增依赖 → 写进 `requirements.txt`
 - 重依赖（>500 MB 或需要 GPU）→ **不要**进 Phase 1 默认 `requirements.txt`，放 Phase 2 docstring 里让用户按需安装
-- 当前依赖（Phase 1）：`deepxiv-sdk`、`pyyaml`、`schedule`、`anthropic`、`markdown`、`requests`（anthropic 的传递依赖，显式引用）
+- 当前依赖（Phase 1）：`deepxiv-sdk`、`pyyaml`、`anthropic`、`markdown`、`requests`
 
 ## 下一步 TODO（Phase 2 + 优化）
 
@@ -324,8 +327,8 @@ python src/run.py --skip-search --no-llm --max-read 0
 # 单篇公式提取
 python src/formula_handler.py 2411.11707
 
-# 常驻（每周一 08:07 自动）
-python src/run.py --daemon
+# 交互式启动器（推荐）
+python start.py
 
 # 查看当前项目状态
 git log --oneline -10

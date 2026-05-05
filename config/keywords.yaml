@@ -73,6 +73,26 @@ search_config:
   max_results_per_keyword: 10         # 每个关键词最多抓取数量
   lookback_days: 7                    # 默认回溯天数
   min_relevance_score: 3              # 最低相关性评分（1-5）
+  # 历史论文池（--historical 一次性建池，之后每次 pipeline 逐步消费）
+  historical_lookback_years: 5        # 历史搜索回溯年数
+  historical_max_results_per_keyword: 20  # 历史搜索每个关键词更多结果
+  historical_read_ratio: 0.3          # 每次运行从历史池取的比例（0=不取，1=全取历史）
+
+# LLM 提供商预设（.env 中 LLM_PROVIDER=xxx 切换，不填则走 ANTHROPIC_BASE_URL 老逻辑）
+providers:
+  deepseek:
+    label: "DeepSeek"
+    base_url: "https://api.deepseek.com/anthropic"
+    models: ["deepseek-v4-pro", "deepseek-v4-flash"]
+  anthropic:
+    label: "Anthropic Official"
+    base_url: ""
+    models: ["claude-sonnet-4-5", "claude-haiku-4-5-20251001", "claude-opus-4-7"]
+  minimax:
+    label: "MiniMax"
+    base_url: "https://api.minimaxi.com/anthropic"
+    models: ["MiniMax-M2.7"]
+    auth_mode: "bearer"
 
 # 输出配置
 output_config:

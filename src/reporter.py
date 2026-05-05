@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -275,12 +276,41 @@ def generate_weekly_top10(
 # ================================================================
 
 
+def _protect_math(text: str) -> tuple[str, list[str]]:
+    """Extract $$...$$ and $...$ blocks so markdown won't mangle LaTeX."""
+    placeholders: list[str] = []
+    # Display math first ($$...$$) — cross-line allowed
+    def _replace_display(m: re.Match) -> str:
+        placeholders.append(f"$${m.group(1)}$$")
+        return f"\x00MATH{len(placeholders) - 1}\x00"
+    text = re.sub(r"\$\$(.+?)\$\$", _replace_display, text, flags=re.DOTALL)
+    # Inline math ($...$) — single-line, not escaped
+    def _replace_inline(m: re.Match) -> str:
+        placeholders.append(f"${m.group(1)}$")
+        return f"\x00MATH{len(placeholders) - 1}\x00"
+    text = re.sub(r"(?<!\\)\$([^$\n]+?)(?<!\\)\$", _replace_inline, text)
+    return text, placeholders
+
+
+def _restore_math(html: str, placeholders: list[str]) -> str:
+    """Put math blocks back after markdown conversion, escaping HTML entities."""
+    for i, ph in enumerate(placeholders):
+        # Unescape markdown entity munging inside math
+        clean = ph.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">") \
+                   .replace("&quot;", "\"").replace("&#39;", "'").replace("<em>", "_") \
+                   .replace("</em>", "_").replace("<br />", "").replace("<br>", "")
+        html = html.replace(f"\x00MATH{i}\x00", clean)
+    return html
+
+
 def _md_to_html(md_text: str, title: str, back_link: str | None = None) -> str:
     """把一段 markdown 渲染为带样式的独立 HTML 页面。"""
+    protected, placeholders = _protect_math(md_text)
     body_html = markdown.markdown(
-        md_text,
+        protected,
         extensions=["extra", "nl2br", "tables", "sane_lists"],
     )
+    body_html = _restore_math(body_html, placeholders)
     back = (
         f'<a class="nav-back" href="{back_link}">&larr; 返回索引</a>' if back_link else ""
     )
@@ -347,9 +377,10 @@ def render_html_all(open_browser: bool = False) -> Path:
         formula_entries[arxiv_id] = (f"papers/{html_path.name}", display_n, total_n)
 
     # 3) 组索引页
-    # 分组：weekly_top 单独置顶，其他 report 作为领域综述区
+    # 分组：weekly_top 单独置顶，synthesis 次之，其他 report 作为领域综述
     weekly = [e for e in report_entries if e[0].startswith("weekly_top")]
-    field_reports = [e for e in report_entries if not e[0].startswith("weekly_top")]
+    synthesis = [e for e in report_entries if e[0].startswith("synthesis_")]
+    field_reports = [e for e in report_entries if not e[0].startswith("weekly_top") and not e[0].startswith("synthesis_")]
 
     # 单篇摘要按综合分排序，以便 index 一眼看到最值得的
     cand_path = _latest_candidates_path()
@@ -390,12 +421,20 @@ def render_html_all(open_browser: bool = False) -> Path:
 </head>
 <body>
 <h1>smart-literature-agent 报告索引</h1>
-<p class="meta">生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}　|　候选池：<code>{candidates_name}</code>　|　单篇摘要：{len(paper_entries)}　|　领域综述：{len(field_reports)}　|　本周 TOP：{len(weekly)}　|　公式速览：{len(formula_entries)}</p>
+<p class="meta">生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}　|　候选池：<code>{candidates_name}</code>　|　单篇摘要：{len(paper_entries)}　|　领域综述：{len(field_reports)}　|　综合创新分析：{len(synthesis)}　|　本周 TOP：{len(weekly)}　|　公式速览：{len(formula_entries)}</p>
 
 <div class="index-section">
 <h2>本周 TOP</h2>
 <ul>
 {li(weekly)}
+</ul>
+</div>
+
+<div class="index-section">
+<h2>跨论文综合创新分析</h2>
+<ul>
+{li(synthesis)}
+{f'<li class="meta">（本周未生成综合创新分析，TOP 论文不足 2 篇或阶段被跳过）</li>' if not synthesis else ''}
 </ul>
 </div>
 
@@ -419,8 +458,8 @@ def render_html_all(open_browser: bool = False) -> Path:
 """
     INDEX_HTML.write_text(idx_html, encoding="utf-8")
     log.info(
-        "HTML 渲染完成：%s（%d 综述 + %d 单篇 + %d 本周 TOP）",
-        INDEX_HTML, len(field_reports), len(paper_entries), len(weekly),
+        "HTML 渲染完成：%s（%d 综述 + %d 单篇 + %d 本周 TOP + %d 综合创新分析）",
+        INDEX_HTML, len(field_reports), len(paper_entries), len(weekly), len(synthesis),
     )
 
     if open_browser:

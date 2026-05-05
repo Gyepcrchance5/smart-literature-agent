@@ -5,12 +5,14 @@
 # 核心：DeepXiv SDK（CLI + MCP，提供论文检索与全文解析）
 deepxiv-sdk>=0.2.5
 
-# 配置与调度
+# 配置
 pyyaml>=6.0
-schedule>=1.2.0
 
 # LLM：Anthropic Python SDK（可直连官方 API，也可通过任何兼容 Messages API 的代理）
 anthropic>=0.39.0
 
 # 报告渲染：Markdown → HTML
 markdown>=3.4
+
+# OpenAlex API / arXiv source download
+requests>=2.31.0

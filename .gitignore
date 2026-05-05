@@ -42,3 +42,12 @@ data/arxiv_src/
 
 # 保留 data/ 目录本身（占位），避免新用户 clone 后 data/ 不存在导致报错
 !data/.gitkeep
+
+# GitHub upload staging area
+.upload_repo/
+
+# Claude Code local settings
+.claude/
+
+# DeepScientist runtime (not part of this project)
+DeepScientist/
