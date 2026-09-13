@@ -169,6 +169,9 @@ python src/arxiv_source.py <arxiv_id>     # 只下载 + 解压 arXiv 源码
 
 ### Agent Runtime 与离线评测
 
+后续开发与作品交付路线见 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)：包含 LangGraph、
+中断恢复、证据检索、任务工作台、协作对照和阶段验收标准。计划中的功能不代表当前已实现。
+
 `status=completed` 仅表示模型生成了回答。任务成功还要求 `task_status=completed`：
 所有计划步骤必须有满足依赖的成功工具调用，回答通过来源检查，并有可引用证据。
 `incomplete`、`insufficient_evidence`、`needs_review` 和 `failed` 不进入已验证记忆。

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Planning
+
+- 新增 `DEVELOPMENT_PLAN.md`，明确 A–F 阶段、任务状态、依赖、验收指标和后续执行协议；AGENTS.md 以此作为当前开发主线。
+
 （main 分支上的改动，未发版。每次打 tag 前把这里的内容 move 到新版本段）
 
 ### Agent Runtime

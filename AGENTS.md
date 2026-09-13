@@ -4,6 +4,12 @@
 > 本人维护者换电脑 / 换 agent 时，agent 首先读此文件即可快速接手项目。
 > 面向人的介绍在 [README.md](README.md)，版本历史在 [CHANGELOG.md](CHANGELOG.md)。
 
+## 当前开发主线（优先于下方历史 TODO）
+
+后续开发按 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) 执行：A 基线与配置 → B LangGraph/恢复 →
+C 证据与记忆 → D 工作台 → E 协作对照 → F 发布展示。每轮更新任务状态、验收证据和下一项。
+当前下一项为 A1；真实调用遇到凭证阻塞时继续可独立完成的离线任务，不默认回到 PDF/HTML 历史 TODO。
+
 ## 一句话
 
 ## 当前新增：质量审查与研究会话
@@ -333,7 +339,7 @@ git diff --cached | grep -iE "mify|ChengRui|sk-ant-[a-zA-Z0-9]{20,}|@qq\\.com"
 
 ### 当用户说"继续开发"时
 
-1. 看 "下一步 TODO" 章节，按优先级建议一项
+1. 读 `DEVELOPMENT_PLAN.md` 的任务状态和执行记录，执行最早且依赖满足的未完成项
 2. 动手前先 `git status` 看是否有未 commit 改动
 3. 实现 → 冒烟 → commit（遵循"开发约定"里的 commit 规范）→ push
 
