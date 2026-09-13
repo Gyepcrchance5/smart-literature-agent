@@ -99,7 +99,7 @@ pip install -r requirements.txt
 #      无需额外配置，项目会自动读取 ~/.claude/settings.json 中的 API key、base_url 和 model
 #    方式 B：手动配置 .env
 #      cp .env.example .env
-#      在 .env 中设置 ANTHROPIC_API_KEY、LLM_MODEL、ANTHROPIC_BASE_URL 等
+#      在 .env 中设置 ANTHROPIC_API_KEY、LLM_PROVIDER、LLM_MODEL 等
 
 # 4. （首次使用）DeepXiv 会在首次调用时自动生成匿名 token
 #    并写入 ~/.env，默认 daily limit 1000。如需提升额度，邮件联系
@@ -110,6 +110,16 @@ deepxiv config
 deepxiv --help
 deepxiv search "knowledge distillation" --limit 3 --format json
 ```
+
+### LLM 配置优先级与失败边界
+
+不指定 `LLM_PROVIDER` 时，进程环境变量优先于 `~/.claude/settings.json`，再优先于项目 `.env`；
+模型会依次读取 `LLM_MODEL`、Claude Code 的 `ANTHROPIC_MODEL`，最后使用默认模型。
+指定 `LLM_PROVIDER` 后，provider 预设负责默认的 endpoint/model/auth mode，进程环境变量或项目 `.env`
+中的显式覆盖仍然有效，但不会把 Claude Code 的凭证自动混入该 provider。这样收到 HTTP 401 时，
+系统会将其记录为不可重试的 `authentication_error`，不自动换 key 或切换服务。
+
+配置解析结果只记录 provider、模型、endpoint 和凭证来源，不记录 API key；未知 provider 会直接报配置错误。
 
 ### Windows 中文环境注意
 

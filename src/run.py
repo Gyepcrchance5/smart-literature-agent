@@ -41,6 +41,7 @@ from utils import (
     OUTPUT_DIR,
     PAPERS_DATA_DIR,
     PAPERS_DIR,
+    classify_llm_error,
     get_logger,
     load_keywords,
     load_seen_ids,
@@ -282,8 +283,11 @@ def single_paper_run(
             stats["evidence_path"] = summary.get("evidence_saved_to")
             stats["quality"] = summary.get("quality")
         except Exception as exc:
-            log.warning("单篇摘要失败 %s：%s", arxiv_id, exc)
-            stats["summary_error"] = str(exc)
+            error_info = classify_llm_error(exc)
+            log.warning("单篇摘要失败 %s：%s", arxiv_id, error_info["message"])
+            stats["summary_error"] = error_info["message"]
+            stats["summary_error_category"] = error_info["category"]
+            stats["summary_error_info"] = error_info
 
     _generate_index()
     return stats
@@ -484,7 +488,9 @@ def pipeline_run(
             stats["synthesis_analyzed_count"] = syn["analyzed_count"]
             stats["synthesis_generated"] = True
         except Exception as e:
-            log.warning("  synthesis 跳过：%s", e)
+            error_info = classify_llm_error(e)
+            log.warning("  synthesis 跳过：%s", error_info["message"])
+            stats["synthesis_error"] = error_info
             stats["synthesis_generated"] = False
     else:
         log.info("[6/6 synthesis] 跳过（TOP 论文不足 2 篇）")
@@ -519,7 +525,11 @@ def _run_llm_stage(
             summarize_single_paper(paper, research_context=research_context)
             summarized += 1
         except Exception as e:
-            log.warning("  summarize(%s) 失败：%s", aid, e)
+            error_info = classify_llm_error(e)
+            log.warning("  summarize(%s) 失败：%s", aid, error_info["message"])
+            stats.setdefault("summary_errors", []).append(
+                {"arxiv_id": aid, **error_info}
+            )
     log.info("  本轮新生成摘要：%d 篇", summarized)
     stats["summarized"] = summarized
 
@@ -540,7 +550,11 @@ def _run_llm_stage(
             generate_field_report(fk, fids)
             reports_generated += 1
         except Exception as e:
-            log.warning("  field_report(%s) 失败：%s", fk, e)
+            error_info = classify_llm_error(e)
+            log.warning("  field_report(%s) 失败：%s", fk, error_info["message"])
+            stats.setdefault("field_report_errors", []).append(
+                {"field": fk, **error_info}
+            )
     log.info("  本轮生成领域报告：%d 份", reports_generated)
     stats["reports_generated"] = reports_generated
 

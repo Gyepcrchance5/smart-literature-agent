@@ -95,7 +95,7 @@ C 证据与记忆 → D 工作台 → E 协作对照 → F 发布展示。每轮
 
 ### 配置 / 凭证
 
-- **LLM 凭证自动同步 Claude Code**（`utils.get_llm_config`）。优先级：显式环境变量 > Claude Code 的 `~/.claude/settings.json` > `.env` 文件。ANTHROPIC_AUTH_TOKEN 和 ANTHROPIC_API_KEY 都会被识别。
+- **LLM 凭证自动同步 Claude Code**（`utils.get_llm_config`）。未指定 `LLM_PROVIDER` 时优先级为进程环境变量 > Claude Code 的 `~/.claude/settings.json` > 项目 `.env`；指定 provider 后只在该 provider 的项目/进程配置与预设内解析，不混入 Claude Code 的另一套凭证。`ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_API_KEY` 都会被识别；401 归类为不可重试认证失败，不自动换 key 或服务。
 - **自定义 httpx transport**（`summarizer._make_http_client`）：禁用 HTTP/2 以兼容部分代理服务器的 SSL 实现（如 MiMo 代理）。
 - **Agent 当你需要调 LLM 时，直接用 `summarizer.Anthropic()`**（不要用原生 `anthropic.Anthropic`），它会自动注入正确的凭证和 http transport。
 

@@ -1,7 +1,7 @@
 """总结与归纳模块：对精读结果生成结构化中文摘要 + 跨论文领域报告。
 
-通过 Anthropic Messages API 调用 LLM。base_url 和 api_key 通过 utils.get_anthropic_config()
-读取（env var 优先，fallback 到 ~/.claude/settings.json），不在代码里硬编码凭证。
+通过 Anthropic Messages API 调用 LLM。provider、base_url、model 和凭证统一由
+``utils.get_llm_config()`` 解析，不在代码里硬编码凭证。
 
 默认模型可通过环境变量 LLM_MODEL 覆盖。示例值 "xiaomi/mimo-v2.5-pro" 是一个第三方路由代理
 的内部模型标识（仅当 ANTHROPIC_BASE_URL 指向该代理时可用）；如果你直连 Anthropic 官方 API，
@@ -21,12 +21,17 @@ from anthropic import Anthropic as _Anthropic
 
 from utils import (
     DATA_DIR,
+    LLMConfigError,
     PAPERS_DIR,
     PAPERS_DATA_DIR,
     REPORTS_DIR,
+    classify_llm_error,
+    create_llm_message,
     get_llm_config,
     get_logger,
     load_keywords,
+    redact_secrets,
+    _safe_endpoint,
 )
 
 from quality_gate import (
@@ -47,9 +52,25 @@ def _make_http_client():
 
 def Anthropic(*args, **kwargs):
     """Create an Anthropic client, applying provider-preset auth when needed."""
-    llm = get_llm_config()
+    # Private escape hatch for callers that already resolved one config.  It
+    # prevents a second resolution between logging, client construction, and
+    # the request (which could otherwise mix provider and credential sources).
+    llm = kwargs.pop("_llm_config", None) or get_llm_config()
     api_key = kwargs.get("api_key") or llm["api_key"]
     base_url = kwargs.get("base_url") or llm["base_url"]
+
+    if not api_key:
+        provider = llm.get("provider_key") or llm.get("provider_label") or "<unspecified>"
+        raise LLMConfigError(
+            f"provider={provider} 未找到绑定的 LLM 凭证；不会回退到其他 provider 或 key。"
+        )
+
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    # 注入自定义 http 客户端（禁用 HTTP/2，兼容 MiMo 等代理的 SSL）
+    if "http_client" not in kwargs:
+        kwargs["http_client"] = _make_http_client()
 
     if llm["auth_mode"] == "bearer" and api_key:
         headers = dict(kwargs.get("default_headers") or {})
@@ -63,13 +84,7 @@ def Anthropic(*args, **kwargs):
             if _saved is not None:
                 os.environ["ANTHROPIC_API_KEY"] = _saved
 
-    if api_key:
-        kwargs["api_key"] = api_key
-    if base_url:
-        kwargs["base_url"] = base_url
-    # 注入自定义 http 客户端（禁用 HTTP/2，兼容 MiMo 等代理的 SSL）
-    if "http_client" not in kwargs:
-        kwargs["http_client"] = _make_http_client()
+    kwargs["api_key"] = api_key
     return _Anthropic(*args, **kwargs)
 
 log = get_logger("summarizer")
@@ -114,14 +129,24 @@ def _client() -> Anthropic:
     """创建 Anthropic 客户端（通过 get_llm_config 读取 provider 预设）。"""
     llm = get_llm_config()
     if not llm.get("api_key"):
-        raise RuntimeError(
-            "未找到 API key。请设置 ANTHROPIC_API_KEY 环境变量，或检查 ~/.claude/settings.json。"
+        provider = llm.get("provider_key") or llm.get("provider_label") or "<unspecified>"
+        raise LLMConfigError(
+            f"provider={provider} 未找到绑定的 LLM 凭证；不会回退到其他 provider 或 key。"
         )
     log.info(
-        "LLM 客户端: provider=%s model=%s base_url=%s",
-        llm["provider_label"], llm["model"], llm["base_url"] or "<official>",
+        "LLM 客户端: provider=%s model=%s endpoint=%s credential=%s source=%s",
+        llm["provider_label"],
+        redact_secrets(llm["model"]),
+        _safe_endpoint(llm["base_url"]),
+        "set" if llm.get("api_key") else "unset",
+        (llm.get("sources") or {}).get("api_key", "unknown"),
     )
-    return Anthropic(api_key=llm["api_key"], base_url=llm["base_url"])
+    client = Anthropic(_llm_config=llm)
+    try:
+        setattr(client, "_smart_lit_llm_config", llm)
+    except Exception:
+        pass
+    return client
 
 
 def _extract_content(paper_data: dict) -> str:
@@ -500,7 +525,8 @@ def summarize_single_paper(
 
     log.info("生成单篇摘要：%s（模型=%s，prompt 长度=%d 字符）", arxiv_id, model, len(prompt))
     client = _client()
-    msg = client.messages.create(
+    msg = create_llm_message(
+        client,
         model=model,
         max_tokens=SINGLE_SUMMARY_MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],
@@ -547,7 +573,9 @@ def summarize_single_paper(
             log.info("  enrichment 已保存：%s", json_path)
             result["enrichment_saved_to"] = str(json_path)
     except Exception as e:
-        log.warning("  enrichment 生成失败（不影响 summary）：%s", e)
+        error_info = classify_llm_error(e)
+        result["enrichment_error"] = error_info
+        log.warning("  enrichment 生成失败（不影响 summary）：%s", error_info["message"])
 
     # 质量审查是独立的本地步骤；它不把 research_context 发送给外部模型。
     try:
@@ -580,7 +608,8 @@ def _generate_enrichment(
     prompt = _build_enrichment_prompt(paper_data, summary_text, fields_config)
     log.info("  生成 enrichment JSON：%s（prompt=%d 字符）", arxiv_id, len(prompt))
 
-    msg = client.messages.create(
+    msg = create_llm_message(
+        client,
         model=model,
         max_tokens=ENRICHMENT_MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],
@@ -708,7 +737,8 @@ def generate_field_report(
     log.info("  prompt 长度=%d 字符", len(prompt))
 
     client = _client()
-    msg = client.messages.create(
+    msg = create_llm_message(
+        client,
         model=model,
         max_tokens=FIELD_REPORT_MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],

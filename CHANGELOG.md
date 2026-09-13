@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - 新增 `DEVELOPMENT_PLAN.md`，明确 A–F 阶段、任务状态、依赖、验收指标和后续执行协议；AGENTS.md 以此作为当前开发主线。
 
+### Configuration and Reliability
+
+- 完成 A1：统一 provider、endpoint、model 和凭证解析，区分进程环境、Claude Code 设置与项目 `.env` 来源。
+- 显式选择 provider 时不混用 Claude Code 的另一套凭证；未知 provider 直接报告配置错误。
+- 增加统一的 LLM 请求错误分类与脱敏，HTTP 401 标记为不可重试的认证失败，不自动切换 key 或服务。
+- Agent trace、摘要、问答、项目匹配和跨论文综合共用安全请求封装；bearer provider 正确绑定 endpoint 和自定义 HTTP client。
+- 新增 `tests/test_utils.py`，覆盖配置优先级、provider 隔离、401 分类、日志脱敏和 bearer client 参数。
+
 （main 分支上的改动，未发版。每次打 tag 前把这里的内容 move 到新版本段）
 
 ### Agent Runtime

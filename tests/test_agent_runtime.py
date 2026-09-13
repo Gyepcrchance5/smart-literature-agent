@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 import unittest
+import anthropic
+import httpx
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -46,6 +48,19 @@ class _FakeMessages:
 class _FakeClient:
     def __init__(self, responses):
         self.messages = _FakeMessages(responses)
+
+
+class _FailingMessages:
+    def __init__(self, error):
+        self.error = error
+
+    def create(self, **kwargs):
+        raise self.error
+
+
+class _FailingClient:
+    def __init__(self, error):
+        self.messages = _FailingMessages(error)
 
 
 class AgentRuntimeTests(unittest.TestCase):
@@ -131,6 +146,35 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(trace["status"], "llm_error")
         self.assertEqual(trace["task_status"], "failed")
         self.assertEqual(memory[0]["answer"], "")
+
+    def test_401_is_recorded_as_non_retryable_authentication_failure(self):
+        request = httpx.Request("POST", "https://provider.invalid/anthropic")
+        response = httpx.Response(401, request=request)
+        error = anthropic.AuthenticationError(
+            "invalid credential",
+            response=response,
+            body={"error": {"message": "invalid credential"}},
+        )
+        registry = ToolRegistry([
+            ToolSpec(name, name, {"type": "object", "properties": {}, "additionalProperties": False},
+                     lambda args: {"arxiv_id": "2411.11707"})
+            for name in ("read_paper", "audit_literature", "retrieve_literature")
+        ])
+        memory = MemoryStore(persist=False)
+        runtime = AgentRuntime(
+            registry=registry,
+            client=_FailingClient(error),
+            memory_store=memory,
+            save_trace=False,
+            repair_failed_reflection=False,
+        )
+        trace = runtime.run("知识蒸馏有什么方法？", "auth-error")
+        self.assertEqual(trace["status"], "llm_error")
+        self.assertEqual(trace["error_category"], "authentication")
+        self.assertEqual(trace["error_info"]["status_code"], 401)
+        self.assertFalse(trace["error_info"]["retryable"])
+        self.assertFalse(trace["error_info"]["fallback_attempted"])
+        self.assertEqual(memory.context("auth-error")[0]["answer"], "")
 
     def test_output_budget_exhaustion_does_not_reuse_answer(self):
         trace, memory, _ = self._run_script("知识蒸馏有什么方法？", [

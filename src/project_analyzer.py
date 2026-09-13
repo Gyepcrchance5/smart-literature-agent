@@ -10,7 +10,14 @@ from datetime import datetime
 from pathlib import Path
 
 from summarizer import Anthropic, DEFAULT_MODEL, load_enrichment
-from utils import OUTPUT_DIR, PAPERS_DIR, get_llm_config, get_logger
+from utils import (
+    OUTPUT_DIR,
+    PAPERS_DIR,
+    classify_llm_error,
+    create_llm_message,
+    get_llm_config,
+    get_logger,
+)
 
 log = get_logger("project_analyzer")
 
@@ -331,15 +338,18 @@ def match_enrichment(
     project_summary = _build_project_summary(project_profile)
     prompt = _build_match_prompt(project_summary, enrichment)
 
+    llm = None
     if client is None:
         llm = get_llm_config()
-        client = Anthropic(api_key=llm["api_key"], base_url=llm["base_url"])
+        client = Anthropic(_llm_config=llm)
 
     arxiv_id = enrichment.get("arxiv_id", "unknown")
     log.info("  匹配分析：%s", arxiv_id)
 
     try:
-        msg = client.messages.create(
+        msg = create_llm_message(
+            client,
+            config=llm,
             model=model,
             max_tokens=INTEGRATION_MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}],
@@ -370,7 +380,8 @@ def match_enrichment(
         return result
 
     except Exception as e:
-        log.warning("  匹配分析失败 %s：%s", arxiv_id, e)
+        error_info = classify_llm_error(e)
+        log.warning("  匹配分析失败 %s：%s", arxiv_id, error_info["message"])
         return None
 
 
@@ -421,7 +432,7 @@ def generate_integration_report(
 
     # 4. 逐篇匹配
     llm = get_llm_config()
-    client = Anthropic(api_key=llm["api_key"], base_url=llm["base_url"])
+    client = Anthropic(_llm_config=llm)
     matches = []
     for enrichment in candidates:
         result = match_enrichment(profile, enrichment, model=model, client=client)

@@ -14,7 +14,14 @@ from pathlib import Path
 
 from project_analyzer import _build_project_summary, scan_project
 from summarizer import Anthropic, DEFAULT_MODEL, load_enrichment
-from utils import OUTPUT_DIR, PAPERS_DIR, get_llm_config, get_logger
+from utils import (
+    OUTPUT_DIR,
+    PAPERS_DIR,
+    classify_llm_error,
+    create_llm_message,
+    get_llm_config,
+    get_logger,
+)
 
 log = get_logger("qa_agent")
 
@@ -369,12 +376,23 @@ def ask(
     log.info("生成回答（prompt=%d 字符，%d 篇论文）", len(prompt), len(retrieved))
 
     llm = get_llm_config()
-    client = Anthropic(api_key=llm["api_key"], base_url=llm["base_url"])
-    msg = client.messages.create(
-        model=model,
-        max_tokens=QA_MAX_TOKENS,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    client = Anthropic(_llm_config=llm)
+    try:
+        msg = create_llm_message(
+            client,
+            config=llm,
+            model=model,
+            max_tokens=QA_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:
+        error_info = classify_llm_error(exc, llm)
+        log.warning("问答 LLM 调用失败：%s", error_info["message"])
+        return {
+            "error": error_info["message"],
+            "error_category": error_info["category"],
+            "error_info": error_info,
+        }
     answer = "".join(
         blk.text for blk in msg.content if getattr(blk, "type", None) == "text"
     )

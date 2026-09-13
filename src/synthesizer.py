@@ -17,7 +17,14 @@ from summarizer import (
     _load_formula_context,
     load_enrichment,
 )
-from utils import PAPERS_DIR, REPORTS_DIR, get_anthropic_config, get_logger, load_keywords
+from utils import (
+    PAPERS_DIR,
+    REPORTS_DIR,
+    create_llm_message,
+    get_llm_config,
+    get_logger,
+    load_keywords,
+)
 
 log = get_logger("synthesizer")
 
@@ -388,18 +395,16 @@ def synthesize_top_papers(
     similarity_hints = _formula_similarity_hints(formula_structs)
 
     # 调用 LLM
-    cfg = get_anthropic_config()
-    client = Anthropic(
-        api_key=cfg["api_key"],
-        base_url=cfg["base_url"],
-        max_retries=2,
-    )
+    cfg = get_llm_config()
+    client = Anthropic(_llm_config=cfg, max_retries=2)
     resolved_model = model or DEFAULT_MODEL
 
     prompt = _build_comparison_prompt(paper_cards, fields_config, similarity_hints)
 
     log.info("  正在调用 %s 生成综合创新分析报告...", resolved_model)
-    response = client.messages.create(
+    response = create_llm_message(
+        client,
+        config=cfg,
         model=resolved_model,
         max_tokens=SYNTHESIS_MAX_TOKENS,
         messages=[{"role": "user", "content": prompt}],
