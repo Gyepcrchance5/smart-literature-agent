@@ -14,10 +14,8 @@
   $ ... $                                     (inline math)
 
 路由：
-  extract(source) 根据 source 类型分派到：
-    - arxiv_id        → arxiv_source.fetch_latex + extract_from_latex
-    - .pdf 路径       → pdf_handler.extract_from_pdf (Phase 2 stub)
-    - URL             → html_handler.extract_from_html (Phase 2 stub)
+  extract(source) 当前只处理 arXiv ID。
+  PDF / HTML 等外部数据源等真实需求出现后再以独立 adapter 接入。
 """
 from __future__ import annotations
 
@@ -28,11 +26,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from utils import OUTPUT_DIR, get_logger
+from utils import PAPERS_DIR, get_logger
 
 log = get_logger("formula_handler")
-
-PAPERS_DIR = OUTPUT_DIR / "papers"
 
 FormulaType = Literal["display", "inline"]
 
@@ -240,8 +236,6 @@ def extract(source: str, **kwargs) -> list[Formula]:
     """统一入口。根据 source 类型分派到对应 handler。
 
     - arXiv ID（匹配 \\d+\\.\\d+ 或 旧风格 cs/xxx）→ arxiv 路线（Phase 1 实装）
-    - 以 .pdf 结尾的路径                        → pdf_handler（Phase 2 stub）
-    - http(s):// 开头的 URL                     → html_handler（Phase 2 stub）
     """
     # arXiv ID pattern：新 ID 如 2411.11707，旧 ID 如 cs/0501001
     if re.fullmatch(r"\d{4}\.\d{4,5}(v\d+)?", source) or re.fullmatch(r"[a-z\-]+/\d{7}", source):
@@ -250,31 +244,25 @@ def extract(source: str, **kwargs) -> list[Formula]:
         res = fetch_latex(source)
         return extract_from_latex(res["main_tex"], **kwargs)
 
-    if source.lower().endswith(".pdf"):
-        from pdf_handler import extract_from_pdf
-
-        return extract_from_pdf(source, **kwargs)
-
-    if re.match(r"https?://", source):
-        from html_handler import extract_from_html
-
-        return extract_from_html(source, **kwargs)
+    if source.lower().endswith(".pdf") or re.match(r"https?://", source):
+        raise ValueError(
+            "当前公式提取只支持 arXiv ID；PDF/期刊 HTML adapter 尚未纳入精简版核心。"
+        )
 
     raise ValueError(
         f"无法识别的 source：{source!r}。"
-        f"支持 arXiv ID（如 '2411.11707'）、PDF 路径（Phase 2）、URL（Phase 2）。"
+        f"支持 arXiv ID（如 '2411.11707'）。"
     )
 
 
-# --------- 产物：保存 JSON + Markdown ---------
+# --------- 产物：保存结构化 JSON ---------
 
 
 def save_formulas(arxiv_id: str, formulas: list[Formula], source_info: dict | None = None) -> dict:
-    """保存 formulas 到 output/papers/<id>.formulas.{json,md}。"""
+    """保存 formulas 到 output/papers/<id>/formulas.json。"""
     safe_id = arxiv_id.replace("/", "_")
-    json_path = PAPERS_DIR / f"{safe_id}.formulas.json"
-    md_path = PAPERS_DIR / f"{safe_id}.formulas.md"
     PAPERS_DIR.mkdir(parents=True, exist_ok=True)
+    json_path = PAPERS_DIR / f"{safe_id}.formulas.json"
 
     # JSON
     payload = {
@@ -295,77 +283,13 @@ def save_formulas(arxiv_id: str, formulas: list[Formula], source_info: dict | No
         encoding="utf-8",
     )
 
-    # Markdown：按 display / inline 分类，display 每条完整列上下文，inline 汇总表
-    lines = [
-        f"# {arxiv_id} 公式速览",
-        "",
-        f"> 生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}  ",
-        f"> 共 {payload['counts']['total']} 个公式："
-        f"{payload['counts']['display']} display + {payload['counts']['inline']} inline；"
-        f"{payload['counts']['numbered']} 带编号、{payload['counts']['with_label']} 带 label",
-        "",
-        "---",
-        "",
-        "## Display 公式（核心）",
-        "",
-    ]
-    display_fs = [f for f in formulas if f.type == "display"]
-    if not display_fs:
-        lines.append("_（本论文未使用 display math 环境）_")
-        lines.append("")
-    for f in display_fs:
-        title = f"### {f.id}"
-        meta_parts = [f"`{f.env}`"]
-        if f.eq_num is not None:
-            meta_parts.append(f"**Eq.{f.eq_num}**")
-        if f.label:
-            meta_parts.append(f"label=`{f.label}`")
-        title += " · " + " · ".join(meta_parts)
-        lines.append(title)
-        lines.append("")
-        # 上下文前
-        if f.context_before:
-            lines.append(f"> …{f.context_before[-120:]}")
-            lines.append("")
-        # LaTeX code block + display math（MathJax 会在 HTML 里渲染）
-        lines.append("```latex")
-        lines.append(f.latex)
-        lines.append("```")
-        lines.append("")
-        lines.append(f"$$\n{f.latex}\n$$")
-        lines.append("")
-        # 上下文后
-        if f.context_after:
-            lines.append(f"> {f.context_after[:120]}…")
-            lines.append("")
-        lines.append("---")
-        lines.append("")
-
-    lines.append("## Inline 公式汇总")
-    lines.append("")
-    inline_fs = [f for f in formulas if f.type == "inline"]
-    if not inline_fs:
-        lines.append("_（无）_")
-    else:
-        lines.append("| id | latex | 上下文 |")
-        lines.append("| :--- | :--- | :--- |")
-        for f in inline_fs:
-            latex_cell = f.latex.replace("|", r"\|").replace("\n", " ")
-            ctx = (f.context_before[-50:] + " **" + f.latex + "** " + f.context_after[:50]).replace("|", r"\|")
-            ctx = re.sub(r"\s+", " ", ctx).strip()
-            lines.append(f"| {f.id} | `${latex_cell}$` | {ctx[:160]} |")
-    lines.append("")
-
-    md_path.write_text("\n".join(lines), encoding="utf-8")
-
     log.info(
         "已保存公式产物：%s (display=%d, inline=%d)",
-        md_path.name, payload["counts"]["display"], payload["counts"]["inline"],
+        json_path.name, payload["counts"]["display"], payload["counts"]["inline"],
     )
 
     return {
         "json": str(json_path),
-        "md": str(md_path),
         "counts": payload["counts"],
     }
 
@@ -387,4 +311,4 @@ if __name__ == "__main__":
         print(f"    latex: {f.latex[:120]}")
         print()
     save_info = save_formulas(arxiv_id, formulas, {"type": "arxiv_latex"})
-    print(f"产物：\n  {save_info['json']}\n  {save_info['md']}")
+    print(f"产物：\n  {save_info['json']}")

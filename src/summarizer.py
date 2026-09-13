@@ -12,10 +12,37 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from anthropic import Anthropic as _Anthropic
+
+from utils import (
+    DATA_DIR,
+    PAPERS_DIR,
+    PAPERS_DATA_DIR,
+    REPORTS_DIR,
+    get_llm_config,
+    get_logger,
+    load_keywords,
+)
+
+from quality_gate import (
+    assess_paper,
+    build_evidence_card,
+    enrich_quality_metadata,
+    save_evidence_card,
+)
+from research_session import load_research_context
+
+
+def _make_http_client():
+    """创建 httpx 客户端，禁用 HTTP/2 以兼容部分代理服务器的 SSL 实现。"""
+    ctx = ssl.create_default_context()
+    transport = httpx.HTTPTransport(http2=False, verify=ctx)
+    return httpx.Client(transport=transport, timeout=httpx.Timeout(300, connect=30))
 
 
 def Anthropic(*args, **kwargs):
@@ -40,20 +67,12 @@ def Anthropic(*args, **kwargs):
         kwargs["api_key"] = api_key
     if base_url:
         kwargs["base_url"] = base_url
+    # 注入自定义 http 客户端（禁用 HTTP/2，兼容 MiMo 等代理的 SSL）
+    if "http_client" not in kwargs:
+        kwargs["http_client"] = _make_http_client()
     return _Anthropic(*args, **kwargs)
 
-from utils import (
-    OUTPUT_DIR,
-    get_anthropic_config,
-    get_llm_config,
-    get_logger,
-    load_keywords,
-)
-
 log = get_logger("summarizer")
-
-PAPERS_DIR = OUTPUT_DIR / "papers"
-REPORTS_DIR = OUTPUT_DIR / "reports"
 
 # 默认模型：通过 LLM_PROVIDER + LLM_MODEL 选择（fallback get_llm_config()）
 # 克隆本仓库后请在 .env 设置 LLM_PROVIDER 和 ANTHROPIC_API_KEY
@@ -304,16 +323,177 @@ $$
 """
 
 
+# enrichment JSON 最大输出长度
+ENRICHMENT_MAX_TOKENS = 4000
+
+
+def _build_enrichment_prompt(paper_data: dict, summary_text: str, fields_config: dict) -> str:
+    """基于已生成的 summary，要求 LLM 输出结构化 JSON 供 agent 消费。"""
+    arxiv_id = paper_data.get("arxiv_id")
+    field_keys = list(fields_config.keys())
+
+    fields_schema = "\n".join(
+        f'    "{k}": {{"score": 1-5, "justification": "一句话说明"}}' + ("," if i < len(field_keys) - 1 else "")
+        for i, k in enumerate(field_keys)
+    )
+
+    return f"""你是一个科研文献结构化分析 agent。下面是论文 {arxiv_id} 的中文技术解读（summary），请基于它提取结构化 JSON。
+
+【论文 summary】
+{summary_text}
+
+【论文元数据】
+- arxiv_id: {arxiv_id}
+- 标题: {paper_data.get('title')}
+- 关键词: {paper_data.get('keywords')}
+
+请严格输出以下 JSON 结构（不要输出任何其他内容，不要用 markdown code fence 包裹）：
+
+{{
+  "method_profile": {{
+    "method_type": "从以下选一个：knowledge_distillation / model_compression / pruning / quantization / nas / architecture / loss_function / training_strategy / data_augmentation / feature_extraction / anomaly_detection / transfer_learning / other",
+    "method_name": "方法的英文简称 + 中文全称",
+    "one_line_summary": "一句话中文概括（20-40字）",
+    "innovation_claim": "作者声称的核心创新点（一句话）"
+  }},
+  "technical_spec": {{
+    "input_spec": {{
+      "data_type": "输入数据类型",
+      "format": "数据格式和维度",
+      "requirements": "特殊要求"
+    }},
+    "output_spec": {{
+      "type": "输出类型",
+      "dimensions": "输出维度"
+    }},
+    "core_modules": [
+      {{
+        "name": "模块名",
+        "role": "模块作用（一句话）",
+        "input": "输入格式",
+        "output": "输出格式",
+        "complexity": "计算复杂度（如果能判断）"
+      }}
+    ],
+    "loss_functions": [
+      {{
+        "name": "损失函数名",
+        "formula_ref": "对应公式 ID（如 f5，无则 null）",
+        "description": "损失函数的作用",
+        "role": "在训练中的角色"
+      }}
+    ],
+    "key_formulas": [
+      {{
+        "formula_ref": "公式 ID",
+        "role": "公式的作用",
+        "variables": {{"变量名": "含义"}}
+      }}
+    ],
+    "training_strategy": {{
+      "stages": ["训练阶段列表"],
+      "optimizer": "优化器",
+      "schedule": "学习率策略",
+      "epochs": "训练轮数",
+      "batch_size": "批大小"
+    }},
+    "compute_cost": {{
+      "gpu_hours": "GPU 用量",
+      "params_added": "额外参数量",
+      "inference_overhead": "推理开销"
+    }},
+    "architecture_assumptions": ["对模型架构的假设"]
+  }},
+  "empirical_results": {{
+    "datasets": [
+      {{"name": "数据集名", "task": "任务", "samples": "样本描述"}}
+    ],
+    "baselines": ["对比方法列表"],
+    "key_metrics": [
+      {{"metric": "指标名", "value": 数值, "unit": "单位", "vs_baseline": "对比提升"}}
+    ],
+    "ablation_highlights": "消融实验关键发现"
+  }},
+  "transferability": {{
+    "transferable_components": [
+      {{
+        "name": "可迁移组件名",
+        "description": "组件描述",
+        "effort": "low / medium / high",
+        "modification": "迁移到故障诊断需要的改动"
+      }}
+    ],
+    "applicable_scenarios": ["适用场景列表"],
+    "dependencies": {{
+      "framework": "框架要求",
+      "pretrained_model": "预训练模型需求",
+      "data_format": "数据格式要求",
+      "hardware": "硬件要求"
+    }},
+    "integration_points": ["可集成到现有代码的具体位置"],
+    "effort_estimate": "预估工作量"
+  }},
+  "field_relevance": {{
+{fields_schema}
+  }},
+  "limitations": {{
+    "paper_self_reported": "论文自述局限",
+    "transfer_risks": ["迁移到故障诊断的额外风险"]
+  }}
+}}
+
+注意：
+1. 如果 summary 中没有提到某个字段的具体信息，用 null 或合理的推测，但标注 "（推测）"
+2. formula_ref 要和 formulas.json 中的 id 对应；如果没有公式数据，用 null
+3. core_modules 至少列出 2 个核心模块
+4. transferable_components 至少列出 1 个
+5. 所有中文内容用中文，英文术语保持英文
+"""
+
+
+def _parse_enrichment_json(raw: str) -> dict:
+    """安全解析 LLM 输出的 enrichment JSON。"""
+    # 去掉 markdown code fence
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        # remove first and last lines
+        lines = cleaned.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines)
+
+    # 尝试直接解析
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # 尝试找到第一个 { 和最后一个 }
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    raise json.JSONDecodeError("无法解析 enrichment JSON", cleaned, 0)
+
+
 def summarize_single_paper(
     paper_data: dict,
     model: str = DEFAULT_MODEL,
     save: bool = True,
+    research_context: dict | None = None,
 ) -> dict:
     """生成单篇结构化中文摘要，返回 {arxiv_id, model, summary, saved_to}。"""
     arxiv_id = paper_data.get("arxiv_id")
     if not arxiv_id:
         raise ValueError("paper_data 缺少 arxiv_id")
 
+    research_context = research_context if research_context is not None else load_research_context()
     cfg = load_keywords()
     fields_config = cfg.get("fields", {})
     prompt = _build_single_paper_prompt(paper_data, fields_config)
@@ -345,20 +525,90 @@ def summarize_single_paper(
     }
 
     if save:
-        PAPERS_DIR.mkdir(parents=True, exist_ok=True)
         safe_id = arxiv_id.replace("/", "_")
+        PAPERS_DIR.mkdir(parents=True, exist_ok=True)
         md_path = PAPERS_DIR / f"{safe_id}.summary.md"
         md_path.write_text(summary_text, encoding="utf-8")
         log.info("  已保存：%s", md_path)
         result["saved_to"] = str(md_path)
 
+    # --- enrichment JSON 生成 ---
+    enrichment: dict = {}
+    try:
+        enrichment = _generate_enrichment(paper_data, summary_text, fields_config, model, client)
+        result["enrichment"] = enrichment
+        if save:
+            safe_id = arxiv_id.replace("/", "_")
+            PAPERS_DIR.mkdir(parents=True, exist_ok=True)
+            json_path = PAPERS_DIR / f"{safe_id}.enrichment.json"
+            json_path.write_text(
+                json.dumps(enrichment, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            log.info("  enrichment 已保存：%s", json_path)
+            result["enrichment_saved_to"] = str(json_path)
+    except Exception as e:
+        log.warning("  enrichment 生成失败（不影响 summary）：%s", e)
+
+    # 质量审查是独立的本地步骤；它不把 research_context 发送给外部模型。
+    try:
+        quality_paper = enrich_quality_metadata(paper_data)
+        assessment = assess_paper(quality_paper, enrichment, research_context)
+        card = build_evidence_card(quality_paper, enrichment, assessment, research_context)
+        result["quality"] = assessment
+        if save:
+            evidence_path = save_evidence_card(card)
+            if evidence_path:
+                result["evidence_saved_to"] = str(evidence_path)
+        log.info(
+            "  质量初筛：%s level=%s score=%s decision=%s",
+            arxiv_id,
+            assessment["quality_level"],
+            assessment["quality_score"],
+            assessment["decision"],
+        )
+    except Exception as e:
+        log.warning("  质量审查失败（不影响 summary）：%s", e)
+
     return result
 
 
+def _generate_enrichment(
+    paper_data: dict, summary_text: str, fields_config: dict, model: str, client
+) -> dict:
+    """基于 summary 内容调用 LLM 提取结构化 enrichment JSON。"""
+    arxiv_id = paper_data.get("arxiv_id")
+    prompt = _build_enrichment_prompt(paper_data, summary_text, fields_config)
+    log.info("  生成 enrichment JSON：%s（prompt=%d 字符）", arxiv_id, len(prompt))
+
+    msg = client.messages.create(
+        model=model,
+        max_tokens=ENRICHMENT_MAX_TOKENS,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw_text = "".join(
+        blk.text for blk in msg.content if getattr(blk, "type", None) == "text"
+    )
+
+    usage = getattr(msg, "usage", None)
+    log.info(
+        "  enrichment 生成完成：%d 字符（input=%s, output=%s）",
+        len(raw_text),
+        getattr(usage, "input_tokens", "?"),
+        getattr(usage, "output_tokens", "?"),
+    )
+
+    enrichment = _parse_enrichment_json(raw_text)
+    # 注入元数据
+    enrichment["arxiv_id"] = arxiv_id
+    enrichment["generated_at"] = datetime.now().isoformat(timespec="seconds")
+    enrichment["model"] = model
+    return enrichment
+
+
 def load_paper(arxiv_id: str) -> dict:
-    """从 output/papers/<id>.json 加载精读产物。"""
+    """从 data/papers/<id>.json 加载精读产物。"""
     safe_id = arxiv_id.replace("/", "_")
-    path = PAPERS_DIR / f"{safe_id}.json"
+    path = PAPERS_DATA_DIR / f"{safe_id}.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -369,6 +619,18 @@ def _load_summary(arxiv_id: str) -> str | None:
     if not path.exists():
         return None
     return path.read_text(encoding="utf-8")
+
+
+def load_enrichment(arxiv_id: str) -> dict | None:
+    """读取已生成的 enrichment JSON。不存在返回 None。"""
+    safe_id = arxiv_id.replace("/", "_")
+    path = PAPERS_DIR / f"{safe_id}.enrichment.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _build_field_report_prompt(field_label: str, summaries: list[tuple[str, str]]) -> str:
@@ -488,7 +750,7 @@ def field_ids_from_candidates(
     """从 data/candidates_<date>.json 里提取属于指定 field 的 arxiv_id 列表。
     不传 candidates_path 就找最新的一个。"""
     if candidates_path is None:
-        files = sorted((OUTPUT_DIR.parent / "data").glob("candidates_*.json"))
+        files = sorted(DATA_DIR.glob("candidates_*.json"))
         if not files:
             return []
         candidates_path = files[-1]

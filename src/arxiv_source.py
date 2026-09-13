@@ -1,4 +1,4 @@
-"""arXiv 源码下载与 .tex 主文件定位。
+r"""arXiv 源码下载与 .tex 主文件定位。
 
 arXiv 对每篇论文都提供 LaTeX 源码：
   URL: https://arxiv.org/e-print/<arxiv_id>

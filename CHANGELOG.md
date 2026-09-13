@@ -9,6 +9,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 （main 分支上的改动，未发版。每次打 tag 前把这里的内容 move 到新版本段）
 
+### Agent Runtime
+
+- 严格区分 response `status` 和 `task_status`；从成功工具调用及依赖顺序重建计划完成度，漏步骤不再通过反思或写入已验证记忆。
+- 历史记忆缺少任务完成标记时不直接复用；空证据任务标记为 `insufficient_evidence`。
+- 无工具/引用样本时指标返回 `null`，审计保留分母并重新校验历史 trace，不沿用旧的成功标记。
+- 项目扫描支持 `work/mainline/code/core` 与正式配置声明，排除数据、run、历史归档；移除项目匹配 prompt 中硬编码的旧实验假设。
+- 增加故障注入、计划遗漏、记忆污染、统计分母和项目扫描回归测试；个人 `data/papers/` 加入忽略规则。
+
+- 新增 `src/agent_runtime.py`：以 `TaskPlanner → ToolRegistry → MemoryStore → Reflection` 组织多步文献任务。
+- 工具调用采用显式白名单、JSON 参数校验、计划依赖、重复/越权调用拦截、异常隔离和步数/总输出预算；每次运行保存可审计的结构化 trace。
+- 新增 `compare_papers` 受控工具，支持对 2-5 篇已有精读论文按统一字段比较，并将单篇质量审查限制到指定论文。
+- 增加工具阶段后的文本收束与总输出 token 预算；未通过 Reflection 的回答不再以可复用答案进入 session memory。
+- 新增 `src/agent_eval.py` 与 `config/agent_eval_cases.yaml`：离线评测规划意图/工具覆盖率，并审计工具成功率、计划覆盖、策略合规、引用可追溯率、反思通过率和预算遵守率。
+- `python src/run.py --agent-question "..."` 运行单次 Agent 任务；`--agent-eval` 和 `--agent-run-audit` 不调用 LLM。
+
+### Refactored
+
+- 新增本地 `research_context` 与 `quality_gate`：支持按研究瓶颈审查论文，而不把质量判断等同于 TOP 分数。
+- 新增 `.evidence.json` 证据卡和 `--quality-audit`，记录方法、数据集、基线、指标、消融、缺失证据和迁移性。
+- 研究上下文默认不发送给外部 LLM，作为本地质量审查和 Agent 消费的安全边界。
+
+- 收口为 Agent 驱动 CLI：`src/run.py` 成为唯一主入口，`start.py` 仅保留兼容转发。
+- 新增 `--paper-id` 单篇论文闭环，避免为单篇解读运行完整周报流水线。
+- 将原始精读数据、面向人的摘要产物和报告路径集中管理，修复项目匹配对 enrichment 文件的扫描路径。
+- 移除 HTML/浏览器作为核心流程的依赖，新增仓库级 `SKILL.md` 描述 Agent 调用契约。
+- 日志文件不可写时自动退回终端，不阻断主流程。
+
+### Removed
+
+- **Web UI**（`src/web_server.py` + `src/web/index.html`）
+  - 移除 FastAPI 后端、单页前端及 `fastapi`/`uvicorn`/`sse-starlette` 依赖
+  - 理由：md 报告 + 静态 HTML 索引页已足够，Web UI 是过度开发
+  - CLI 问答（`qa_agent.py`）和项目匹配（`project_analyzer.py`）保留，有独立 CLI 入口
+
+### Added
+
+- **结构化 Enrichment JSON** (`src/summarizer.py`)
+  - 在生成摘要的同时，用 LLM 提取方法类型、核心模块、损失函数、可迁移组件、适用场景、字段相关性等结构化信息
+  - 输出 `.enrichment.json` sidecar 文件，供下游 agent 直接查询
+  - `load_enrichment()` 函数供 synthesis 和 project_analyzer 调用
+- **文献知识库问答 RAG** (`src/qa_agent.py`)
+  - 基于 enrichment JSON + 摘要构建知识库，支持中英文混合提问
+  - 关键词检索 + LLM 生成回答，带流式输出和引用溯源
+  - `python src/run.py --qa` 交互模式 / `--qa-question` 单次提问
+- **项目代码匹配分析** (`src/project_analyzer.py`)
+  - 只读扫描科研项目代码（模型 / 损失函数 / 数据加载器）
+  - 用 LLM 匹配文献中的可迁移方法，生成集成建议报告
+  - `python src/run.py --project-path <路径>`
+- **Web UI** (`src/web_server.py` + `src/web/index.html`)
+  - FastAPI 后端：状态 API / 问答（SSE 流式）/ 知识库浏览 / 项目分析 / 流水线控制（SSE 日志）
+  - 单页前端：仪表盘 / 流水线 / 问答对话 / 知识库浏览 / 项目匹配（暗色/亮色主题）
+  - Claude 风格 UI 设计，中文字体优化
+- **LLM 配置自动同步 Claude Code** (`src/utils.py`)
+  - `get_llm_config()` 自动读取 `~/.claude/settings.json` 的 API key、base_url、model
+  - 支持 `ANTHROPIC_AUTH_TOKEN` 和 `ANTHROPIC_API_KEY` 两种凭证格式
+  - 自定义 httpx transport（禁用 HTTP/2）兼容 MiMo 等代理的 SSL
+- **Chart.js 可视化图表** (`src/reporter.py`)
+  - TOP10 柱状图、TOP5 雷达图、领域分布饼图
+
+### Removed
+
+- **DeepScientist 集成**：移除 `deepscientist_exporter.py` 和相关文档，不再需要
+- **Google Fonts 依赖**：前端改用系统中文字体栈，移除 Inter 字体加载
+
+### Fixed
+
+- `_run_llm_stage()` 误处理 `.formulas.json` 文件（glob 未过滤）
+- 公式阶段未过滤 `.enrichment.json` 文件
+
 ---
 
 ## [1.2.0] — 2026-05-01

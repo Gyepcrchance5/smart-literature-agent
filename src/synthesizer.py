@@ -14,11 +14,10 @@ from pathlib import Path
 from summarizer import (
     Anthropic,
     DEFAULT_MODEL,
-    PAPERS_DIR,
-    REPORTS_DIR,
     _load_formula_context,
+    load_enrichment,
 )
-from utils import get_anthropic_config, get_logger, load_keywords
+from utils import PAPERS_DIR, REPORTS_DIR, get_anthropic_config, get_logger, load_keywords
 
 log = get_logger("synthesizer")
 
@@ -43,7 +42,7 @@ def _load_synthesis_formulas(arxiv_id: str, max_display: int = 3) -> str | None:
 
 
 def _load_formula_structs(arxiv_id: str) -> list[dict]:
-    """Load structured display formulas from .formulas.json, returning [{id, latex, eq_num, label}, ...]."""
+    """Load structured display formulas from formulas.json, returning [{id, latex, eq_num, label}, ...]."""
     safe_id = arxiv_id.replace("/", "_")
     path = PAPERS_DIR / f"{safe_id}.formulas.json"
     if not path.exists():
@@ -130,7 +129,11 @@ def _formula_similarity_hints(formula_structs: dict[str, list[dict]]) -> str:
 
 
 def _build_paper_card(
-    arxiv_id: str, score: dict, summary_md: str, formula_context: str | None = None
+    arxiv_id: str,
+    score: dict,
+    summary_md: str,
+    formula_context: str | None = None,
+    enrichment: dict | None = None,
 ) -> str:
     """构建单篇论文的结构化卡片，供给 LLM 做交叉比较。"""
     title = score.get("title", "") or ""
@@ -143,7 +146,34 @@ def _build_paper_card(
     card = f"""### [{arxiv_id}] {title}
 - 综合分: {composite:.1f} | 相关性: {relevance:.0f} | 来源: {venue_name} | 引用: {citation_count}
 - 涉及领域: {fields}
-- 论文摘要:
+"""
+
+    # 如果有 enrichment JSON，注入结构化摘要
+    if enrichment:
+        mp = enrichment.get("method_profile", {})
+        tech = enrichment.get("technical_spec", {})
+        trans = enrichment.get("transferability", {})
+        card += f"""- 方法类型: {mp.get('method_type', 'unknown')} | 方法名: {mp.get('method_name', '')}
+- 一句话: {mp.get('one_line_summary', '')}
+- 创新点: {mp.get('innovation_claim', '')}
+"""
+        modules = tech.get("core_modules", [])
+        if modules:
+            mod_strs = [f"{m['name']}（{m.get('role', '')}）" for m in modules[:3] if isinstance(m, dict)]
+            if mod_strs:
+                card += f"- 核心模块: {' / '.join(mod_strs)}\n"
+        losses = tech.get("loss_functions", [])
+        if losses:
+            loss_strs = [f"{l['name']}（{l.get('role', '')}）" for l in losses[:2] if isinstance(l, dict)]
+            if loss_strs:
+                card += f"- 损失函数: {' / '.join(loss_strs)}\n"
+        components = trans.get("transferable_components", [])
+        if components:
+            comp_strs = [f"{c['name']}（{c.get('effort', '?')}）" for c in components[:3] if isinstance(c, dict)]
+            if comp_strs:
+                card += f"- 可迁移组件: {' / '.join(comp_strs)}\n"
+
+    card += f"""- 论文摘要:
 {summary_md}
 """
     if formula_context:
@@ -334,21 +364,25 @@ def synthesize_top_papers(
     # 构建论文卡片（含关键公式，如已提取）+ 收集结构化公式
     paper_cards = []
     formula_count = 0
+    enrichment_count = 0
     formula_structs: dict[str, list[dict]] = {}
     for i in range(n):
         aid = arxiv_ids[i]
         s = scores[i] if i < len(scores) else {}
         summary = _load_summary(aid)
         formula_ctx = _load_synthesis_formulas(aid, max_display=3)
+        enrichment = load_enrichment(aid)
         if formula_ctx is not None:
             formula_count += 1
-        card = _build_paper_card(aid, s, summary, formula_ctx)
+        if enrichment is not None:
+            enrichment_count += 1
+        card = _build_paper_card(aid, s, summary, formula_ctx, enrichment)
         paper_cards.append(card)
         # 加载结构化公式用于相似度计算
         fs = _load_formula_structs(aid)
         if fs:
             formula_structs[aid] = fs
-    log.info("  其中 %d/%d 篇论文有关键公式可供交叉引用", formula_count, n)
+    log.info("  其中 %d/%d 篇论文有关键公式，%d/%d 篇有 enrichment JSON", formula_count, n, enrichment_count, n)
 
     # 公式相似度预计算提示
     similarity_hints = _formula_similarity_hints(formula_structs)

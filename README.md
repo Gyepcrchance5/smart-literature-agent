@@ -1,6 +1,6 @@
 # smart-literature-agent
 
-> **一句话**：基于 DeepXiv SDK 与 Anthropic Messages API 的个人科研文献智能体 —— 交互式仪表盘一键启动，抓取 6 大研究方向的 arXiv 新论文 + 历史回溯 5 年、按 token 预算分级精读、用 LLM 产出中文摘要与跨论文领域综述 + 模块融合创新分析，综合评分输出本周 TOP10 合并报告 + 带 MathJax 的静态 HTML 索引。
+> **一句话**：基于 DeepXiv SDK 与 Anthropic Messages API 的 Agent 驱动个人科研文献工具 —— 检索 arXiv 新论文、按 token 预算精读、生成中文摘要与 enrichment JSON、输出 Markdown 报告和 `index.json`，并用轻量 Runtime 统一承载 Planning、Tool Use、Memory、Reflection、问答和项目匹配能力。
 
 ## 项目简介
 
@@ -12,29 +12,32 @@
 2. **OpenAlex 质量信号增强**：对每篇候选调 [OpenAlex API](https://openalex.org)（免费免 key），补充 **venue 类型**（期刊 / 会议 / 预印本）、**venue h-index**、**最新引用数**、**作者列表** —— 让新论文被顶会/顶刊接收后能自动被识别。DOI 查不到的老论文走 title search + 相似度校验 fallback。本地 JSON cache 避免重复查询。
 3. **智能精读**：按 `token_count` 分四档策略 —— `raw`（全文）/ `selected`（精选 Introduction/Method/Experiments/Conclusion）/ `preview`（10k 字符概要）/ `metadata_only`（DeepXiv 尚未 ingest 时的降级），对超 80k token 的长文也能优雅处理。
 4. **中文技术解读 + 领域综述**：通过兼容 Anthropic Messages API 的 LLM 产出**结构化中文单篇技术解读**（方法拆解 / 关键公式解释 / 迁移映射 / 面向轴承故障诊断的技术路线 / 局限）与**跨论文领域综述**（问题聚类 / 主流技术路线 / 常用数据集 / 开放问题 / 对研究者的具体迁移建议）。
-5. **公式提取**：从 arXiv e-print 下载论文原始 LaTeX 源码，解析 `equation / align / eqnarray / gather / multline` 环境 + `$$/\\[/\\($ /\\(/$ ` 定界符，输出带**公式编号**、**\\label**、**前后 150 字上下文**的结构化 `.formulas.json` + 可读 `.formulas.md` + MathJax 渲染的 HTML。方便 AI 理解或直接拷贝到你自己写的论文里。
-6. **四维综合评分 + 本周 TOP10**：`composite = 45% × 启发式相关性 + 25% × DeepXiv score + 20% × Venue 档次 + 10% × 引用数`（每维归一到 0-100）。新论文有顶刊/顶会加成，老论文有引用加成，两条路都能筛出好东西。生成 TOP10 合并 markdown 报告。
-7. **HTML 渲染 + 自动打开浏览器**：所有 markdown 产物一键转 GitHub 风格 HTML + **MathJax** 公式渲染，生成总览 `index.html`（本周 TOP / 领域综述 / 单篇摘要 + 公式速览），跑完自动弹出。
-8. **DeepScientist 投喂包导出**：把本周 TOP 论文、摘要、公式和迁移路线整理成 `output/deepscientist_bundle/`，生成 `startup_prompt.md` / `literature_brief.md` / `hypotheses.md`，用于启动 DeepScientist 研究 quest。
-9. **交互式启动器 + 增量 + 失败重试**：`python start.py` 仪表盘一键运行，实时展示项目状态；`seen_ids` 增量去重，`metadata_only` 和 `failed` 不写 seen 以便下次重试。
+5. **公式提取**：从 arXiv e-print 下载论文原始 LaTeX 源码，解析 `equation / align / eqnarray / gather / multline` 环境和常用定界符，输出带**公式编号**、**\\label**、**前后 150 字上下文**的结构化 `.formulas.json`，供摘要和 Agent 使用。
+6. **结构化 Enrichment JSON**：在生成摘要的同时，用 LLM 提取方法类型、核心模块、损失函数、可迁移组件、适用场景、字段相关性等结构化信息，输出 `.enrichment.json` sidecar 文件，供下游 agent 直接查询和匹配。
+7. **四维综合评分 + 本周 TOP10**：`composite = 45% × 启发式相关性 + 25% × DeepXiv score + 20% × Venue 档次 + 10% × 引用数`（每维归一到 0-100）。新论文有顶刊/顶会加成，老论文有引用加成，两条路都能筛出好东西。生成 TOP10 合并 markdown 报告。
+8. **跨论文综合创新分析**：对 TOP 论文做 LLM 驱动的交叉对比，输出共享问题景观 / 方法矩阵 / 模块融合创新方向 / 关键公式交叉引用。
+9. **文献知识库问答（RAG）**：基于 enrichment JSON + 摘要构建知识库，支持中英文混合提问，关键词检索 + LLM 生成回答，带流式输出和引用溯源。
+10. **项目代码匹配**：只读扫描科研项目代码（模型 / 损失函数 / 数据加载器），用 LLM 匹配文献中的可迁移方法，生成集成建议报告。
+11. **Agent Runtime**：`TaskPlanner → ToolRegistry → MemoryStore → Reflection` 闭环，计划依赖校验、工具白名单、JSON 参数校验、重复/越权调用拦截、异常隔离和结构化 trace；以工具调用、LLM 回合和总输出 token 控制成本。
+12. **Agent 评测与质量保障**：离线规划用例检查意图准确率和工具覆盖率；历史 trace 审计工具成功率、计划覆盖、策略合规、引用可追溯率、反思通过率和预算遵守率。
 
 ### 规模数据（实测）
 
 | 项目 | 值 |
 |---|---|
-| 单次完整流水线耗时 | **7 分钟**（85 候选 / 10 精读 / 11 摘要 / 4 领域综述 / 1 TOP10 + HTML） |
+| 单次完整流水线耗时 | **7 分钟**（历史实测：85 候选 / 10 精读 / 11 摘要 / 4 领域综述 / 1 TOP10） |
 | Token 消耗 | **~7 万 Token**（~49k input + 22k output） |
 | 覆盖关键词 | 42 个（6 领域） |
-| 输出文件类型 | 5 种：候选清单 JSON / 精读 JSON / 单篇 summary markdown / 领域综述 / HTML 索引页 |
-| 运行模式 | 交互式启动器（`python start.py`），手动触发，全程可控 |
+| 输出文件类型 | 8 种：候选/精读 JSON / summary / enrichment / 公式 / Markdown 报告 / Agent trace / session 记忆 |
+| 运行模式 | CLI / Agent 触发（`python src/run.py`），全程可控 |
 
 ### 设计亮点
 
 - **凭证零明文落地**：LLM key / DeepXiv token 全部从环境变量或用户级配置读取，代码仓库里没有一个字节的 key。
 - **支持第三方兼容代理**：通过 `ANTHROPIC_BASE_URL` + `LLM_MODEL` 即可切换直连官方或走兼容代理（含 cc-switch 等配置工具），不改一行代码。
 - **失败优雅降级**：DeepXiv 的 search 和 paper ingest 是两条管道，搜到不代表能读全文；四档精读策略 + `failed_ids` + 重试 flag 完整覆盖。
-- **结构化产物**：所有中间产物都是 markdown / JSON，方便下游 LLM Agent 二次消费（后续可 MCP 化）。
-- **面向 DeepScientist 的前置文献层**：本项目负责每周文献摄取、筛选、公式解释和迁移路线整理；DeepScientist 负责基于这些材料做 baseline 驱动的实验、finding 记忆和论文产出。
+- **结构化产物**：所有核心产物都是 Markdown / JSON，方便下游 LLM Agent 直接消费；未通过 Reflection 的回答不会作为可复用答案注入 session memory。
+- **LLM 配置自动同步**：API key、base_url、model 自动从 Claude Code 的 `~/.claude/settings.json` 同步，无需在 `.env` 中重复配置。
 
 ---
 
@@ -45,19 +48,36 @@
 ```
 smart-literature-agent/
 ├── config/
-│   └── keywords.yaml        # 六大领域关键词 + 搜索/输出配置
+│   └── keywords.yaml          # 六大领域关键词 + 搜索/输出配置 + LLM Provider 预设
 ├── src/
 │   ├── __init__.py
-│   ├── searcher.py          # 检索：DeepXiv search → 候选论文
-│   ├── reader.py            # 精读：--head / --brief / --section
-│   ├── summarizer.py        # 总结：单篇中文摘要 + 跨论文领域报告
-│   └── utils.py             # 日志 / 配置 / 去重 / DeepXiv CLI 调用封装
+│   ├── searcher.py            # 检索：DeepXiv search → 候选论文 + OpenAlex 增强
+│   ├── reader.py              # 精读：4 档 token 预算策略
+│   ├── summarizer.py          # 总结：单篇中文摘要 + enrichment JSON + 跨论文领域报告
+│   ├── synthesizer.py         # 跨论文综合创新分析：公式交叉引用 / 模块融合方向
+│   ├── reporter.py            # 综合评分 + TOP10 Markdown 报告
+│   ├── formula_handler.py     # LaTeX 公式提取：5 种环境 + 4 种定界符
+│   ├── arxiv_source.py        # arXiv e-print 下载 + 解压 + 主 .tex 定位
+│   ├── enricher.py            # OpenAlex 质量信号增强（venue / citation / h-index）
+│   ├── project_analyzer.py    # 科研项目代码扫描 + 文献→代码匹配分析
+│   ├── qa_agent.py            # 文献知识库 RAG 问答系统
+│   ├── agent_runtime.py       # Planning / Tool Use / Memory / Reflection 运行时 + 策略门
+│   ├── agent_eval.py          # 离线规划评测 + Agent trace 审计
+│   ├── run.py                 # Pipeline 编排器 + CLI flags
+│   └── utils.py               # 日志 / 配置 / 去重 / DeepXiv CLI 调用封装
+├── start.py                   # 兼容入口，转发到 src/run.py
 ├── output/
-│   ├── papers/              # 单篇精读产物
-│   └── reports/             # 跨论文综述报告
+│   ├── papers/                # 单篇精读产物（.json / .summary.md / .enrichment.json / .formulas.*）
+│   ├── reports/               # 领域综述 + TOP10 + 集成分析报告
+│   ├── qa/                    # 问答历史记录
+│   ├── agent_runs/            # Agent 工具调用与反思 trace
+│   ├── agent_memory/          # 精简 session 记忆
+│   └── index.json             # 全局 Agent 读取入口
 ├── data/
-│   └── seen_ids.json        # 已处理论文 ID（去重）
-├── logs/                    # 运行日志，按日期切分
+│   ├── seen_ids.json          # 已处理论文 ID（去重）
+│   ├── candidates_*.json      # 每次 search 的候选集合
+│   └── openalex_cache.json    # OpenAlex 查询缓存
+├── logs/                      # 运行日志，按日期切分
 ├── requirements.txt
 └── README.md
 ```
@@ -74,13 +94,12 @@ conda activate smart-lit
 # 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. 复制一份 .env 并填入你的 LLM 凭证
-cp .env.example .env
-#    必填：
-#      ANTHROPIC_API_KEY    你的 Anthropic API key（或兼容代理的 key）
-#      LLM_MODEL            模型 ID，例如 claude-haiku-4-5-20251001
-#    可选：
-#      ANTHROPIC_BASE_URL   如果用第三方兼容代理，写代理的 URL；直连官方可省略
+# 3. LLM 凭证配置（二选一）
+#    方式 A：自动同步 Claude Code 配置（推荐）
+#      无需额外配置，项目会自动读取 ~/.claude/settings.json 中的 API key、base_url 和 model
+#    方式 B：手动配置 .env
+#      cp .env.example .env
+#      在 .env 中设置 ANTHROPIC_API_KEY、LLM_MODEL、ANTHROPIC_BASE_URL 等
 
 # 4. （首次使用）DeepXiv 会在首次调用时自动生成匿名 token
 #    并写入 ~/.env，默认 daily limit 1000。如需提升额度，邮件联系
@@ -120,7 +139,7 @@ conda 和 pip 建议切清华镜像（本机已配置）：
 `src/run.py` 编排 search → read → summarize → field_report 全流程，支持增量运行和 failed 重试。
 
 ```bash
-# 一次性增量运行（默认最多精读 10 篇；末尾自动开浏览器看 index.html）
+# 一次性增量运行（默认最多精读 10 篇）
 python src/run.py
 
 # 常用参数
@@ -129,18 +148,15 @@ python src/run.py --retry-failed          # 重试 failed_ids 里未 ingest 的�
 python src/run.py --skip-search           # 跳过 search，复用最新 candidates（省 API）
 python src/run.py --no-llm                # 只 search + read，不调 LLM（省 token）
 python src/run.py --skip-formulas         # 跳过从 arXiv 源码提取公式的阶段
-python src/run.py --skip-report           # 只跑前面阶段，不出 TOP10 和 HTML
-python src/run.py --no-open               # 跑完不自动开浏览器
+python src/run.py --skip-report           # 只跑前面阶段，不出 TOP10 和索引
 python src/run.py --top-n 20              # TOP N 改成 20
 python src/run.py --field knowledge_distillation   # 只对指定领域生成综述
 
-# 交互式启动器（推荐）
-python start.py                            # 仪表盘 + 菜单选择
+# 兼容入口（等价于 python src/run.py）
+python start.py
 
 # 独立运行各阶段（方便调试）
 python src/reporter.py --top10            # 只重算 TOP10
-python src/reporter.py --html --open      # 只重渲 HTML 并打开浏览器
-python src/reporter.py --all --open       # 重算 TOP10 + HTML + 打开
 python src/formula_handler.py <arxiv_id>  # 只对一篇论文提公式（arXiv 路线）
 python src/arxiv_source.py <arxiv_id>     # 只下载 + 解压 arXiv 源码
 ```
@@ -150,6 +166,43 @@ python src/arxiv_source.py <arxiv_id>     # 只下载 + 解压 arXiv 源码
 - `metadata_only`（DeepXiv 全文未 ingest）和 `failed` 的论文**不写 seen**，下次可重试
 - 已有 `.summary.md` 的论文不重复生成摘要
 - 每个领域 ≥ 2 篇可用摘要才生成综述（低于不跑）
+
+### Agent Runtime 与离线评测
+
+`status=completed` 仅表示模型生成了回答。任务成功还要求 `task_status=completed`：
+所有计划步骤必须有满足依赖的成功工具调用，回答通过来源检查，并有可引用证据。
+`incomplete`、`insufficient_evidence`、`needs_review` 和 `failed` 不进入已验证记忆。
+旧记忆缺少任务完成标记时保留记录但不直接复用。来源检查仍不等于论断事实核验。
+
+审计中的无样本指标为 JSON `null`，应显示为 N/A；`sample_counts` 给出有效样本数。
+历史 trace 会重算完成度和反思，而不是照搬历史成功标记。
+
+```bash
+# 离线验收，可附加本地项目的有限只读扫描；不会调用 LLM
+python scripts/acceptance_probe.py --out output/acceptance/local --project-path /path/to/project
+python -m unittest discover -s tests -v
+```
+
+项目扫描支持 `core/` 和 `work/mainline/code/core/` 的直接 Python 文件、入口说明与
+`work/mainline/configs/official_mainline.json`。不会递归读取数据、模型、历史 run 或归档。
+类清单表示代码定义，正式配置中的启用/禁用声明优先；扫描不核验实验成绩。
+
+Agent Runtime 复用检索、精读、质量审查和项目扫描模块，通过显式工具白名单执行多步任务：
+
+```bash
+# 单次 Agent 任务：需要可用的 Anthropic-compatible LLM 配置
+python src/run.py --agent-question "这周有哪些模型压缩论文值得优先阅读？"
+python src/run.py --agent-question "2411.11707 值得作为研究依据吗？" --agent-session paper-review
+python src/run.py --agent-question "比较 2411.11707 和 2501.00001 的方法差异"
+
+# 不调用 LLM：检查规划器是否覆盖核心意图和工具
+python src/run.py --agent-eval
+
+# 不调用 LLM：审计已经保存的 output/agent_runs/*.json
+python src/run.py --agent-run-audit
+```
+
+每次 Agent 运行保存一份结构化 trace（若目录不可写则保留回答并给出保存告警），其中包含 plan、步骤依赖、工具策略事件、工具参数与结果摘要、token usage、终止原因、引用来源和 reflection 结果。`inspect_project` 只读扫描目标项目，不提供任意 shell 或写文件工具；`compare_papers` 只读取已有精读产物。
 
 ### 单模块调试
 
@@ -162,35 +215,7 @@ python src/summarizer.py <arxiv_id>       # 单篇摘要
 python src/summarizer.py --field knowledge_distillation   # 指定领域综述
 ```
 
-### 导出 DeepScientist 投喂包
-
-本项目可以作为 DeepScientist 的前置文献情报层：先完成每周文献抓取、精读、公式提取和技术路线解读，再把少量高质量材料投喂给 DeepScientist 做后续实验规划与执行。
-
-```bash
-# 1) 先跑本项目流水线，得到候选、摘要、公式和 TOP 报告
-python src/run.py --no-open
-
-# 2) 导出 DeepScientist 启动材料（默认 TOP5）
-python src/deepscientist_exporter.py --top-n 5
-
-# 可选：指定你的故障诊断 baseline 代码路径
-python src/deepscientist_exporter.py --top-n 5 --baseline-path E:\codes\bearing-fault-baseline
-```
-
-导出目录：
-
-```
-output/deepscientist_bundle/
-├── manifest.json             # 本次导出的元数据和文件清单
-├── candidate_papers.json     # TOP 论文结构化清单
-├── literature_brief.md       # 给 DeepScientist 读的文献简报
-├── hypotheses.md             # 候选研究假设
-└── startup_prompt.md         # 可直接作为 DeepScientist quest 启动提示的材料
-```
-
-推荐只投喂 TOP3-TOP5，而不是把 85 篇候选全部交给 DeepScientist。DeepScientist 更适合消费“少量高质量、和 baseline 强相关”的研究材料。
-
-## 产物位置
+### 产物位置
 
 ```
 data/
@@ -200,17 +225,24 @@ data/
 
 output/
 ├── papers/
-│   ├── <arxiv_id>.json          # 精读产物（含 head + 策略 + 正文片段）
-│   ├── <arxiv_id>.summary.md    # 单篇中文摘要
-│   ├── <arxiv_id>.formulas.json # 结构化公式清单（每条含 latex/type/env/label/eq_num/上下文）
-│   └── <arxiv_id>.formulas.md   # 可读公式速览（Display 每条独立章节，Inline 汇总表）
+│   ├── <arxiv_id>.summary.md        # 单篇中文摘要
+│   ├── <arxiv_id>.enrichment.json   # 结构化 enrichment（方法 / 模块 / 公式 / 可迁移性 / 字段相关性）
+│   ├── <arxiv_id>.formulas.json     # 结构化公式清单（每条含 latex/type/env/label/eq_num/上下文）
+│   └── ...
 ├── reports/
-│   ├── <field>_<YYYYMMDD>.md    # 领域综述报告
-│   └── weekly_top<N>_<YYYYMMDD>.md  # 本周 TOP 合并报告
-└── html/
-    ├── index.html               # 总览索引（带 MathJax 渲染 + 📐 公式 链接）
-    ├── reports/*.html
-    └── papers/*.summary.html + *.formulas.html
+│   ├── <field>_<YYYYMMDD>.md        # 领域综述报告
+│   ├── weekly_top<N>_<YYYYMMDD>.md  # 本周 TOP 合并报告
+│   └── integration_<YYYYMMDD>.json  # 项目集成分析报告
+├── qa/
+│   └── qa_<timestamp>.json          # 问答历史记录
+├── agent_runs/
+│   └── <timestamp>_<run_id>.json     # Agent 工具调用、成本和反思 trace
+├── agent_memory/
+│   └── <session>.json                # 精简 session 记忆（不含凭证和全文）
+└── index.json                        # Agent 读取入口
+
+data/papers/
+└── <arxiv_id>.json                   # 内部精读产物（含 head + 策略 + 正文片段）
 
 data/
 ├── arxiv_src/<arxiv_id>/        # 下载并解压的 arXiv LaTeX 源码（本地缓存）
@@ -224,25 +256,30 @@ data/
 `src/reporter.py::composite_score()` 归一化到 0-100：
 
 ```
-composite = 50% × 启发式相关性（6 领域 × 1-5 分总和 / 30）
-          + 30% × DeepXiv search score（截断到 10 归一化）
-          + 20% × log1p(citation_count) / log(1000)
+composite = 45% × 启发式相关性（6 领域 × 1-5 分总和 / 30）
+          + 25% × DeepXiv search score（截断到 10 归一化）
+          + 20% × Venue 档次
+          + 10% × log1p(citation_count) / log(1000)
 ```
 
-权重常量在 `reporter.py` 顶部 `W_RELEVANCE / W_DEEPXIV / W_CITATION`，直接改即可。
+权重常量在 `reporter.py` 顶部 `W_RELEVANCE / W_DEEPXIV / W_VENUE / W_CITATION`，直接改即可。
 
 ## 路线图
 
 - [x] **步骤 1**：项目骨架 + conda 环境 + DeepXiv CLI 验证
 - [x] **步骤 2**：接入 DeepXiv search / paper，批量检索 + 全文策略化读
 - [x] **步骤 3**：接入 LLM（通过 Anthropic Messages API，模型可配置），单篇中文摘要 + 跨论文领域综述
-- [x] **步骤 4**：一键流水线 `run.py` + 交互式启动器 `start.py`（增量 / 失败重试）
-- [x] **步骤 5**：综合评分 + 本周 TOP10 合并报告 + HTML 渲染 + 自动开浏览器
+- [x] **步骤 4**：一键流水线 `run.py` + 增量 / 失败重试
+- [x] **步骤 5**：综合评分 + 本周 TOP10 Markdown 报告 + `index.json`
 - [x] **步骤 6a (Phase 1)**：arXiv 论文公式提取（下载 e-print → 解析 LaTeX → 带编号/label/上下文的结构化产物）
-- [x] **步骤 7 (v1.2.0)**：跨论文综合创新分析 `synthesizer.py` + 公式交叉引用 + 融合公式输出 + 历史论文池 + LLM Provider 预设系统 + 交互式启动器 `start.py`
-- [ ] **步骤 8 (Phase 2)**：PDF / HTML 论文公式提取（部署到校园网电脑后启用，见下方部署指南）
+- [x] **步骤 7 (v1.2.0)**：跨论文综合创新分析 `synthesizer.py` + 公式交叉引用 + 融合公式输出 + 历史论文池 + LLM Provider 预设系统
+- [x] **步骤 8**：结构化 Enrichment JSON（方法 / 模块 / 可迁移性 / 字段相关性）+ 文献知识库 RAG 问答 + 项目代码匹配分析
+- [x] **步骤 9**：文献知识库 RAG 问答 + 项目代码匹配分析 + LLM 配置自动同步 Claude Code
+- [x] **步骤 10**：Agent Runtime（Planning / Tool Use / Memory / Reflection）+ 工具白名单 + 结构化 trace
+- [x] **步骤 11**：离线规划评测与 Agent trace 质量审计（不调用 LLM）
+- [ ] **步骤 12（后置）**：按真实需求接入 PDF / HTML 论文来源
 
-## Phase 2 部署指南（仅在可访问 IEEE/ScienceDirect 等数据库的校园网电脑上启用）
+## 后置扩展（不属于当前核心）
 
 ### PDF 路线（IEEE Xplore / ScienceDirect 下载的 .pdf）
 
@@ -267,10 +304,31 @@ composite = 50% × 启发式相关性（6 领域 × 1-5 分总和 / 30）
    - 根据 URL host 分派（`ieee.org` / `sciencedirect.com` / `nature.com` / `science.org`）
    - 抓 HTML 后用 BeautifulSoup 定位正文和公式节点
    - MathML → LaTeX 用 `mathml-to-latex`
-   - MathJax 脚本生成的 `<script type="math/tex">` 直接提 innerText
+   - 公式节点提取和 MathML 转换由未来 adapter 自行负责
 3. **登录态**：在校园网 IP 段内直接访问通常即可；如需 EZproxy，把 proxy URL 写进 requests session。
 
 详细设计参考每个模块文件顶部的 docstring。
+
+## 质量审查与研究上下文
+
+论文质量不再只由 TOP 分数表示。对已有精读产物运行：
+
+```bash
+python src/run.py --quality-audit
+```
+
+每篇论文会生成 `output/papers/<id>.evidence.json`，包含质量等级（A/B/C）、
+方法/数据集/基线/指标/消融检查、缺失证据、迁移性评分和产物来源。
+
+如需结合具体科研瓶颈审查，复制 `config/research_context.example.yaml` 为本地
+`config/research_context.yaml`，填写问题、瓶颈、基线和约束，再运行：
+
+```bash
+python src/run.py --quality-audit --research-context config/research_context.yaml
+python src/run.py --paper-id 2411.11707 --research-context config/research_context.yaml
+```
+
+研究上下文默认只在本地质量审查中使用，不会自动发送给外部 LLM。
 
 ## DeepXiv CLI 备忘
 

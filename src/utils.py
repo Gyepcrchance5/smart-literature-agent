@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -17,6 +18,9 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 LOGS_DIR = PROJECT_ROOT / "logs"
 OUTPUT_DIR = PROJECT_ROOT / "output"
+PAPERS_DIR = OUTPUT_DIR / "papers"
+REPORTS_DIR = OUTPUT_DIR / "reports"
+_FILE_LOGGING_UNAVAILABLE = False
 
 
 def _load_project_env() -> None:
@@ -72,13 +76,22 @@ def get_logger(name: str = "smart-literature-agent") -> logging.Logger:
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     log_file = LOGS_DIR / f"{datetime.now():%Y%m%d}.log"
-    fh = logging.FileHandler(log_file, encoding="utf-8")
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
-
     sh = logging.StreamHandler()
     sh.setFormatter(fmt)
     logger.addHandler(sh)
+
+    # 日志目录可能在只读容器、文件锁定或受限权限下不可写；这不应阻断
+    # search/read/summarize 主流程，至少保留终端日志。一次失败后不再让每个
+    # 子模块重复尝试同一个不可写文件，避免污染 Agent 的可读 trace/终端输出。
+    global _FILE_LOGGING_UNAVAILABLE
+    if not _FILE_LOGGING_UNAVAILABLE:
+        try:
+            fh = logging.FileHandler(log_file, encoding="utf-8")
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
+        except OSError as exc:
+            _FILE_LOGGING_UNAVAILABLE = True
+            logger.warning("日志文件不可写，改用终端输出：%s", exc)
     return logger
 
 
@@ -106,38 +119,64 @@ def save_seen_ids(ids: set[str]) -> None:
         json.dump(sorted(ids), f, ensure_ascii=False, indent=2)
 
 
+PAPERS_DATA_DIR = DATA_DIR / "papers"  # 内部精读产物（reader 输出，summarizer 读取）
+
+
 def ensure_dirs() -> None:
     """确保所有输出目录存在。"""
-    for d in [DATA_DIR, LOGS_DIR, OUTPUT_DIR, OUTPUT_DIR / "papers", OUTPUT_DIR / "reports"]:
+    for d in [DATA_DIR, LOGS_DIR, OUTPUT_DIR, PAPERS_DIR, REPORTS_DIR, PAPERS_DATA_DIR]:
         d.mkdir(parents=True, exist_ok=True)
 
 
-def get_anthropic_config() -> dict[str, str | None]:
-    """返回 {"api_key", "base_url"}：优先从环境变量读，fallback 到 ~/.claude/settings.json。
+def try_write_text(path: str | Path, content: str, logger: logging.Logger | None = None) -> Path | None:
+    """尽力写入非关键产物；权限/文件锁异常只记录告警，不击穿主流程。"""
+    out = Path(path)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(content, encoding="utf-8")
+        return out
+    except OSError as exc:
+        target_logger = logger or logging.getLogger("smart-literature-agent")
+        target_logger.warning("产物写入失败（继续运行）：%s — %s", out, exc)
+        return None
 
-    fallback 的动机：某些配置工具（例如 cc-switch）会把 key 注入到 Claude Code 进程的环境
-    变量，但这些变量只在那个进程的子进程可见。如果从别的 shell（PowerShell / 独立终端）
-    运行本脚本，env 里就没有。此时去读 Claude Code 的持久配置兜底，避免重复配置。
-    若你直连 Anthropic 官方 API 并已设好 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL 环境变量，
-    此 fallback 不会触发。
+
+def _read_claude_code_settings() -> dict[str, str]:
+    """读取 Claude Code 持久化配置（~/.claude/settings.json 的 env 段）。
+
+    优先级最高：当用户通过 Claude Code 对话时，项目应自动复用同一套凭证，
+    无需手动在 .env 中维护 API key。
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    base_url = os.environ.get("ANTHROPIC_BASE_URL")
-    if not (api_key and base_url):
-        settings_path = Path.home() / ".claude" / "settings.json"
-        if settings_path.exists():
-            try:
-                cfg = json.loads(settings_path.read_text(encoding="utf-8"))
-                env_section = cfg.get("env", {})
-                api_key = api_key or env_section.get("ANTHROPIC_API_KEY")
-                base_url = base_url or env_section.get("ANTHROPIC_BASE_URL")
-            except (OSError, json.JSONDecodeError):
-                pass
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return {}
+    try:
+        cfg = json.loads(settings_path.read_text(encoding="utf-8"))
+        return cfg.get("env", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def get_anthropic_config() -> dict[str, str | None]:
+    """返回 {"api_key", "base_url"}。
+
+    优先级：
+      1. 显式环境变量 ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL
+      2. Claude Code 配置（ANTHROPIC_AUTH_TOKEN 也视为 api_key）
+      3. .env 文件（由 _load_project_env 已注入 os.environ）
+    """
+    # Claude Code 配置优先（.env 可能有已过期的 key）
+    cc = _read_claude_code_settings()
+    api_key = cc.get("ANTHROPIC_API_KEY") or cc.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
+    base_url = cc.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL")
+
     return {"api_key": api_key, "base_url": base_url}
 
 
 def get_llm_config() -> dict:
     """Resolve LLM config from provider preset (keywords.yaml) + env vars.
+
+    优先级：显式环境变量 > provider preset > Claude Code 配置 > 默认值
 
     Returns:
         {
@@ -149,12 +188,18 @@ def get_llm_config() -> dict:
             "provider_key": str,      # provider name in config, e.g. "deepseek"
         }
     """
+    # Claude Code 配置作为底层 fallback
+    cc = _read_claude_code_settings()
+
     provider_key = os.environ.get("LLM_PROVIDER", "")
     providers = load_keywords().get("providers", {}) if provider_key else {}
 
     if provider_key in providers:
         p = providers[provider_key]
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        # Claude Code 的 AUTH_TOKEN 作为 API key fallback（.env 的 key 可能已过期）
+        cc_key = cc.get("ANTHROPIC_AUTH_TOKEN") or cc.get("ANTHROPIC_API_KEY", "")
+        env_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = env_key or cc_key
         base_url = p.get("base_url", "")
         model = os.environ.get("LLM_MODEL") or p.get("models", [""])[0]
         auth_mode = p.get("auth_mode", "")
@@ -167,15 +212,17 @@ def get_llm_config() -> dict:
             "provider_key": provider_key,
         }
 
-    # backward compat: no LLM_PROVIDER set
+    # 无 LLM_PROVIDER：直接用 Claude Code 配置
     cfg = get_anthropic_config()
-    model = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
+    raw_model = cc.get("ANTHROPIC_MODEL") or os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
+    # 去掉 Claude Code 内部的上下文窗口标记（如 mimo-v2.5-pro[1m] → mimo-v2.5-pro）
+    model = re.sub(r"\[.*\]$", "", raw_model) if raw_model else raw_model
     return {
         "api_key": cfg["api_key"] or "",
         "base_url": cfg.get("base_url") or "",
         "model": model,
         "auth_mode": "",
-        "provider_label": "自定义",
+        "provider_label": "Claude Code 同源",
         "provider_key": "",
     }
 

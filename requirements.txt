@@ -10,9 +10,7 @@ pyyaml>=6.0
 
 # LLM：Anthropic Python SDK（可直连官方 API，也可通过任何兼容 Messages API 的代理）
 anthropic>=0.39.0
-
-# 报告渲染：Markdown → HTML
-markdown>=3.4
+httpx>=0.27.0
 
 # OpenAlex API / arXiv source download
 requests>=2.31.0

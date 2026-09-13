@@ -1,0 +1,27 @@
+# Agent Runtime 的离线规划评测用例。
+# 只检查意图和工具覆盖率，不调用 LLM、不访问外部服务。
+cases:
+  - id: discover
+    query: "这周有什么关于模型压缩的新论文？"
+    expected_intent: discovery
+    expected_tools: [search_candidates, retrieve_literature]
+
+  - id: paper-review
+    query: "论文 2411.11707 值得作为研究依据吗？"
+    expected_intent: paper_review
+    expected_tools: [read_paper, audit_literature]
+
+  - id: project-match
+    query: "结合我的项目瓶颈，判断剪枝方法能否迁移。"
+    expected_intent: project_match
+    expected_tools: [inspect_project, retrieve_literature]
+
+  - id: quality
+    query: "帮我审查知识库里哪些论文证据更完整。"
+    expected_intent: quality_audit
+    expected_tools: [retrieve_literature, audit_literature]
+
+  - id: comparison
+    query: "比较 2411.11707 和 2501.00001 的方法差异。"
+    expected_intent: synthesis
+    expected_tools: [compare_papers]

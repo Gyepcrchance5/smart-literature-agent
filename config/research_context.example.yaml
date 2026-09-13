@@ -1,0 +1,12 @@
+# 复制为 research_context.yaml，再填入你当前真正要解决的研究问题。
+# research_context.yaml 仅用于本地质量审查，默认不发送给外部 LLM。
+project: ""
+problem: ""
+bottleneck: ""
+symptoms: []
+baseline: ""
+constraints: []
+target_metrics: []
+known_attempts: []
+target_fields: []
+non_goals: []

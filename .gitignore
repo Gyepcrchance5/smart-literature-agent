@@ -6,6 +6,7 @@
 .env
 .env.local
 .env.*.local
+config/research_context.yaml
 
 # --- Python ---
 __pycache__/
@@ -39,6 +40,7 @@ data/seen_ids.json
 data/failed_ids.json
 data/openalex_cache.json
 data/arxiv_src/
+data/papers/
 
 # 保留 data/ 目录本身（占位），避免新用户 clone 后 data/ 不存在导致报错
 !data/.gitkeep

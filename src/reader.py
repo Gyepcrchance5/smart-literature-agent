@@ -18,7 +18,7 @@ import json
 
 from utils import (
     DATA_DIR,
-    OUTPUT_DIR,
+    PAPERS_DATA_DIR,
     get_logger,
     load_seen_ids,
     run_deepxiv,
@@ -26,8 +26,6 @@ from utils import (
 )
 
 log = get_logger("reader")
-
-PAPERS_DIR = OUTPUT_DIR / "papers"
 FAILED_IDS_PATH = DATA_DIR / "failed_ids.json"
 
 _SMALL_TOKEN_THRESHOLD = 8000
@@ -179,9 +177,9 @@ def full_read(arxiv_id: str, save: bool = True, mark_seen: bool = True) -> dict:
     )
 
     if save and result["strategy"] != "failed":
-        PAPERS_DIR.mkdir(parents=True, exist_ok=True)
+        PAPERS_DATA_DIR.mkdir(parents=True, exist_ok=True)
         safe_id = arxiv_id.replace("/", "_")
-        out = PAPERS_DIR / f"{safe_id}.json"
+        out = PAPERS_DATA_DIR / f"{safe_id}.json"
         out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         log.info("  已保存：%s", out)
 

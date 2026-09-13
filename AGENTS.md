@@ -6,7 +6,19 @@
 
 ## 一句话
 
-**smart-literature-agent**：一个面向个人科研的**交互式文献跟踪智能体**。通过 `python start.py` 一键启动，抓取 arXiv 新论文 + 回溯 5 年历史 → OpenAlex 质量信号增强 → LLM 生成中文摘要与领域综述 → 提取论文 LaTeX 公式 → 综合评分输出本周 TOP10 合并报告 + 跨论文综合创新分析 + 带 MathJax 的静态 HTML 索引。
+## 当前新增：质量审查与研究会话
+
+- Agent `status` 是回答执行状态，`task_status` 才是任务结果；漏步骤、缺证据和失败答案不能进入已验证记忆。
+- 历史 trace 审计重建计划完成度；无样本比率返回 `null`，展示时标 N/A 并附样本数。
+- 科研项目扫描支持 `work/mainline/code/core`；读取正式配置声明，区分类定义与实际启用模块，不递归扫描数据/run/归档。
+- `scripts/acceptance_probe.py --out output/acceptance/local --project-path <path>` 提供本地只读验收；项目内容不得混入 `--live` 模式。
+
+- `config/research_context.example.yaml` 是研究问题上下文模板；复制为本地 `research_context.yaml` 后填写当前瓶颈、基线和约束。
+- `quality_gate.py` 对已有精读产物做本地、可解释的质量初筛，不把研究上下文默认发送给外部 LLM。
+- 每篇完成摘要的论文会新增 `output/papers/<id>.evidence.json`，记录质量等级、缺失证据、迁移性分数和产物来源。
+- `python src/run.py --quality-audit` 可只审查已有论文库，不调用 LLM；可配合 `--research-context <path>` 使用当前研究上下文。
+
+**smart-literature-agent**：一个面向个人科研的**Agent 驱动文献跟踪工具**。通过 `python src/run.py` 执行，抓取 arXiv 新论文 → OpenAlex 质量信号增强 → LLM 生成中文摘要 + 结构化 enrichment JSON → 可选公式提取 → Markdown 报告和 Agent 索引；附带统一的 Planning / Tool Use / Memory / Reflection Runtime。
 
 ## 当前状态（以最新 git log 为准；本文件在 release 时同步更新）
 
@@ -14,66 +26,72 @@
 - **Phase 1 (local dev machine)**：✅ 完成
   - 数据源：arXiv（via DeepXiv）
   - 公式提取：arXiv e-print LaTeX 源码 → equation/align/eqnarray 等环境解析
-- **Phase 2 (campus-network machine)**：⏳ 待做（`src/pdf_handler.py` 和 `src/html_handler.py` 是 stub）
+- **PDF / HTML**：⏸ 后置，不属于当前核心闭环
   - 数据源扩展：IEEE Xplore / ScienceDirect 的 PDF；期刊网站 HTML
   - 需要校园网 IP 访问 + 本地装 PDF 解析器（推荐 MinerU）
 
-## 架构（5 阶段 pipeline）
+## 架构（6 阶段 pipeline）
 
 ```
-[1/5 search]    searcher.py  → DeepXiv 按关键词抓 6 领域 × N 关键词的新论文
+[1/6 search]    searcher.py  → DeepXiv 按关键词抓 6 领域 × N 关键词的新论文
                                → 候选落盘 data/candidates_<YYYYMMDD>.json
                                → 同时自动调 enricher 做 OpenAlex 增强
 
-[2/5 read]      reader.py    → 按 token_count 4 档策略精读：
+[2/6 read]      reader.py    → 按 token_count 4 档策略精读：
                                raw (≤8k) / selected (8k-20k, 选关键 section)
                                / preview (>20k, ~10k 字符预览)
                                / metadata_only (DeepXiv 未 ingest 全文)
-                               → 产物 output/papers/<id>.json
+                               → 产物 data/papers/<id>.json
                                → 更新 seen_ids.json（metadata_only/failed 不写 seen，以便重试）
 
-[3/5 llm]       summarizer.py → 对每篇新 read 的论文生成中文单篇摘要（output/papers/<id>.summary.md）
-                               → 每领域 ≥2 篇摘要时生成跨论文综述（output/reports/<field>_<date>.md）
-                               → 默认模型 xiaomi/mimo-v2.5-pro（可通过 LLM_MODEL env 覆盖）
-
-[4/5 formulas]  formula_handler.py + arxiv_source.py
+[3/6 formulas]  formula_handler.py + arxiv_source.py
                              → 对每篇精读论文下载 arXiv e-print tarball → 解压 → 找主 .tex
                                → 解析 5 种数学环境 + 4 种定界符 → 带 eq_num / label / 上下文
-                               → 产物 output/papers/<id>.formulas.{json,md}
+                               → 产物 output/papers/<id>.formulas.json
 
-[5/5 report]    reporter.py  → 4 维综合评分（relevance 45% + DeepXiv 25% + venue 20% + citation 10%）
-                               → 本周 TOP10 合并报告（output/reports/weekly_top<N>_<date>.md）
-                               → 所有 md 转 HTML + MathJax 渲染 + 生成 output/html/index.html
-                               → 默认自动在浏览器打开 index.html
+[4/6 summarize] summarizer.py → 对每篇新 read 的论文生成中文单篇摘要 + 结构化 enrichment JSON
+                               → 产物 output/papers/<id>.summary.md + <id>.enrichment.json
+                               → 每领域 ≥2 篇摘要时生成跨论文综述（output/reports/<field>_<date>.md）
+
+[5/6 report]    reporter.py  → 4 维综合评分（relevance 45% + DeepXiv 25% + venue 20% + citation 10%）
+                               → 本周 TOP10 Markdown 合并报告 + output/index.json
+
+[6/6 synthesis] synthesizer.py → 对 TOP 论文做跨论文交叉对比：公式交叉引用 / 模块融合创新方向
 ```
+
+**附加模块**（非 pipeline 内，独立运行）：
+- `qa_agent.py` — 文献知识库 RAG 问答（`python src/run.py --qa`）
+- `project_analyzer.py` — 科研项目代码匹配分析（`python src/run.py --project-path <路径>`）
 
 关键模块清单（src/）：
 
 | 模块 | 职责 | 核心函数 |
 |---|---|---|
-| `utils.py` | 日志 / 配置 / seen_ids / `run_deepxiv` subprocess 封装 / `get_anthropic_config` 凭证读取 | |
-| `searcher.py` | 批量检索 + 本轮去重 + 分数阈值 + OpenAlex 增强入口 | `search_all_fields()` |
+| `utils.py` | 日志 / 配置 / seen_ids / `run_deepxiv` subprocess 封装 / `get_llm_config` 凭证读取（自动同步 Claude Code） | `get_llm_config()` / `get_anthropic_config()` |
+| `searcher.py` | 批量检索 + 本轮去重 + 分数阈值 + OpenAlex 增强入口 + 历史论文池 | `search_all_fields()` / `build_historical_pool()` |
 | `reader.py` | DeepXiv paper wrapper + 4 档读策略 + failed_ids 管理 | `full_read()` |
-| `summarizer.py` | Anthropic SDK 封装 + 中文 prompt + 单篇摘要 + 领域综述 + 启发式相关性打分 | `summarize_single_paper()` / `generate_field_report()` / `score_relevance()` |
+| `summarizer.py` | Anthropic SDK 封装（自定义 httpx transport）+ 中文 prompt + 单篇摘要 + enrichment JSON + 领域综述 | `summarize_single_paper()` / `generate_field_report()` / `load_enrichment()` |
 | `enricher.py` | OpenAlex 客户端 + DOI 查询 + title search fallback + published-sibling 查询 + venue prestige 计分 | `enrich_all()` / `venue_prestige_score()` |
 | `arxiv_source.py` | arXiv e-print 下载 + tar/gz/plain 解压 + 主 .tex 定位 + `\input/\include` 递归内联 | `fetch_latex()` |
 | `formula_handler.py` | LaTeX 数学环境 + 定界符解析 + 上下文抽取 + 路由器（分派 arXiv/PDF/HTML） | `extract()` / `extract_from_latex()` / `save_formulas()` |
-| `pdf_handler.py` | [Phase 2 stub] PDF → 公式提取（计划接 MinerU） | `extract_from_pdf()` |
-| `html_handler.py` | [Phase 2 stub] HTML → 公式提取（计划写期刊 adapter） | `extract_from_html()` |
-| `reporter.py` | composite_score 4 维评分 + weekly TOP10 合并 + HTML 渲染 + MathJax 注入 + 浏览器自动打开 | `composite_score()` / `generate_weekly_top10()` / `render_html_all()` |
+| `reporter.py` | composite_score 4 维评分 + weekly TOP10 Markdown 报告 | `composite_score()` / `generate_weekly_top10()` |
 | `synthesizer.py` | 跨论文综合创新分析：公式交叉引用 / 相似度预计算 / 模块融合方向 / 融合公式提取 | `synthesize_top_papers()` |
-| `deepscientist_exporter.py` | DeepScientist 投喂包导出：TOP 论文、摘要、公式、候选假设、startup prompt | `export_bundle()` |
-| `reporter.py` | 4 维综合评分 + TOP10 合并 + HTML 渲染 + MathJax 注入 + 公式保护 | `composite_score()` / `render_html_all()` |
-| `run.py` | Pipeline orchestrator + CLI flags | `pipeline_run()` |
-| `start.py` | 交互式启动器：仪表盘 / 菜单 / LLM Provider 切换 / 参数调整 | `main()` |
+| `qa_agent.py` | 文献知识库 RAG 问答：关键词检索 + 中英文混合提问 + 流式输出 + 引用溯源 | `ask()` / `retrieve()` / `interactive_loop()` |
+| `project_analyzer.py` | 科研项目代码扫描（只读）+ LLM 匹配文献可迁移方法 + 集成建议报告 | `scan_project()` / `generate_integration_report()` |
+| `agent_runtime.py` | 轻量 Agent Runtime：规划依赖、工具白名单、session 记忆、引用反思、论文比较与 trace | `AgentRuntime.run()` / `TaskPlanner.plan()` / `reflect_answer()` |
+| `agent_eval.py` | Agent 离线规划评测与历史 trace 质量审计 | `evaluate_planner()` / `evaluate_trace()` / `audit_agent_runs()` |
+| `run.py` | Pipeline 编排器 + CLI flags（含 --qa / --project-path） | `pipeline_run()` |
+| `research_session.py` | 加载本地研究问题、瓶颈、约束和目标指标 | `load_research_context()` / `format_research_context()` |
+| `quality_gate.py` | 本地质量初筛、证据缺口、迁移性评分和 evidence card | `assess_paper()` / `audit_library()` |
+| `start.py` | 兼容入口，转发到 `src/run.py` | `main()` |
 
 ## 核心设计决策（& 为什么）
 
 ### 配置 / 凭证
 
-- **LLM 凭证从环境变量读，代码不含明文 key**（`utils.get_anthropic_config`）。env 里没有时从 `~/.claude/settings.json` 的 `env` 段兜底 —— 兼容 cc-switch 之类配置工具对 Claude Code 进程注入 env 的场景。
-- **DEFAULT_MODEL 从 `os.environ.get("LLM_MODEL", "xiaomi/mimo-v2.5-pro")` 读**。默认值是一个私有代理的路由标识，fork 本仓库后必须用自己的模型 ID 覆盖（`.env` 里设 `LLM_MODEL=claude-haiku-4-5-20251001`）。
-- **Agent 当你需要调 LLM 时，直接用 `anthropic.Anthropic(api_key=..., base_url=...)`**，不要硬编码任何 URL。`base_url` 是可选的，官方直连时空即可。
+- **LLM 凭证自动同步 Claude Code**（`utils.get_llm_config`）。优先级：显式环境变量 > Claude Code 的 `~/.claude/settings.json` > `.env` 文件。ANTHROPIC_AUTH_TOKEN 和 ANTHROPIC_API_KEY 都会被识别。
+- **自定义 httpx transport**（`summarizer._make_http_client`）：禁用 HTTP/2 以兼容部分代理服务器的 SSL 实现（如 MiMo 代理）。
+- **Agent 当你需要调 LLM 时，直接用 `summarizer.Anthropic()`**（不要用原生 `anthropic.Anthropic`），它会自动注入正确的凭证和 http transport。
 
 ### 评分公式（4 维，权重在 `reporter.py` 顶部）
 
@@ -237,11 +255,11 @@ git diff --cached | grep -iE "mify|ChengRui|sk-ant-[a-zA-Z0-9]{20,}|@qq\\.com"
 
 - 新增依赖 → 写进 `requirements.txt`
 - 重依赖（>500 MB 或需要 GPU）→ **不要**进 Phase 1 默认 `requirements.txt`，放 Phase 2 docstring 里让用户按需安装
-- 当前依赖（Phase 1）：`deepxiv-sdk`、`pyyaml`、`anthropic`、`markdown`、`requests`
+- 当前依赖：`deepxiv-sdk`、`pyyaml`、`anthropic`、`httpx`、`requests`
 
 ## 下一步 TODO（Phase 2 + 优化）
 
-### Phase 2：PDF 路线（`src/pdf_handler.py`）
+### Phase 2：PDF 路线（`src/pdf_handler.py`，需校园网环境）
 
 - [ ] 装 MinerU：`pip install -U "magic-pdf[full]" --extra-index-url https://wheels.myhloli.com`
 - [ ] 实装 `extract_from_pdf(pdf_path)`：
@@ -274,18 +292,44 @@ git diff --cached | grep -iE "mify|ChengRui|sk-ant-[a-zA-Z0-9]{20,}|@qq\\.com"
 ### 工具化
 
 - [ ] **MCP 化**：DeepXiv 已经有 MCP server；可以把本项目的 `search/read/summarize/formulas` 也包装成 MCP tool，让 Claude Desktop / Cursor 直接调
-- [ ] **Web UI**：FastAPI + 静态 HTML index；支持在浏览器里搜 / 删 / 重跑单篇
+- [x] ~~**Web UI**~~：已移除，改用 Markdown 报告 + `index.json` + Agent 对话
 - [ ] **桌面通知**：周一跑完后 win10toast 弹通知"本周 TOP10 已生成，点此查看"
 - [ ] **Email 通知**：SMTP 发到你邮箱，含 TOP3 论文的精简摘要
 
 ## Agent 操作建议
+
+### 主交互模式：Agent 驱动（重要）
+
+用户希望 **Claude Code 作为项目的主交互入口**，替代菜单式交互。
+
+工作方式：
+1. 用户用自然语言描述需求（如"这周有什么新论文"、"帮我看看这篇论文"）
+2. Agent 判断该执行哪些 pipeline 阶段，通过 `python src/run.py` + 对应 flags 执行
+3. 结果以对话形式呈现，不要让用户自己去看文件
+
+典型场景映射：
+- "这周有什么新论文" → `python src/run.py`（search → read → summarize → report），展示 TOP10
+- "帮我看看这篇 [arxiv_id]" → 单篇 `reader → summarizer → formula_handler`，给出完整解读
+- "这篇论文值不值得作为研究依据" → 运行 `python src/run.py --paper-id <arxiv_id>` 后读取生成的 `.evidence.json`，或审查已有库
+- "结合我的瓶颈判断这篇论文" → 配置本地 `research_context.yaml`，再运行 `--paper-id <arxiv_id> --research-context <path>`
+- "有没有关于 X 的方法" → `python src/run.py --qa-question "问题"`
+- "这个项目怎么改进" → `python src/run.py --project-path <路径>`
+- "让 Agent 自己完成这个文献任务" → `python src/run.py --agent-question "<问题>" --agent-session <会话名>`
+- "比较多篇论文的方法" → `python src/run.py --agent-question "比较 <arxiv_id1> 和 <arxiv_id2> 的方法差异"`
+- "检查 Agent 规划和质量" → `python src/run.py --agent-eval` 或 `python src/run.py --agent-run-audit`
+- "上次做到哪了" → 读 `seen_ids.json` + `git log` + 最新 candidates
+- "跑一遍完整的" → `python src/run.py`（全 pipeline 六阶段）
+- "只重新生成报告" → `python src/run.py --skip-search --no-llm --max-read 0`
+- "重试之前失败的" → `python src/run.py --retry-failed`
+
+`start.py` 仅保留为兼容包装，实际逻辑都在 `src/run.py`。
 
 ### 当你第一次打开这个项目时
 
 1. 读本文件（AGENTS.md）
 2. 读 [CHANGELOG.md](CHANGELOG.md) 看最新版本做了什么
 3. 跑 `python src/utils.py` 冒烟验证 env 正常（会输出配置加载、logger 初始化）
-4. 跑 `python src/run.py --skip-search --no-llm --no-open --max-read 0` 确认 pipeline 各阶段能 dry run
+4. 跑 `python src/run.py --skip-search --no-llm --skip-formulas --max-read 0` 确认 pipeline 各阶段能 dry run
 
 ### 当用户说"继续开发"时
 
@@ -327,7 +371,14 @@ python src/run.py --skip-search --no-llm --max-read 0
 # 单篇公式提取
 python src/formula_handler.py 2411.11707
 
-# 交互式启动器（推荐）
+# 审查已有论文库（不调用 LLM）
+python src/run.py --quality-audit
+
+# Agent 规划离线评测 / 历史 trace 审计（不调用 LLM）
+python src/run.py --agent-eval
+python src/run.py --agent-run-audit
+
+# 交互式启动器（CLI 备用入口，主方式是通过 Claude Code 对话）
 python start.py
 
 # 查看当前项目状态
